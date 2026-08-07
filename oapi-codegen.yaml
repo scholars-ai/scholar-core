@@ -1,0 +1,8 @@
+# oapi-codegen 配置：从 scholar-shared 的 OpenAPI 契约生成 chi server 接口
+# 运行：make generate（假设 scholar-shared 在同级目录检出）
+package: api
+output: internal/api/api.gen.go
+generate:
+  chi-server: true
+  models: true
+  embedded-spec: true
