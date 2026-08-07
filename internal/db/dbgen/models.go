@@ -10,7 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/pgvector/pgvector-go"
+	pgvector_go "github.com/pgvector/pgvector-go"
 )
 
 type AgentRunStatus string
@@ -539,16 +539,16 @@ type ArticleEvaluation struct {
 }
 
 type Insight struct {
-	ID         uuid.UUID          `json:"id"`
-	Kind       InsightKind        `json:"kind"`
-	Platform   NullPlatform       `json:"platform"`
-	Content    string             `json:"content"`
-	Evidence   []byte             `json:"evidence"`
-	Confidence pgtype.Numeric     `json:"confidence"`
-	Status     InsightStatus      `json:"status"`
-	Embedding  pgvector.Vector    `json:"embedding"`
-	CreatedAt  pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+	ID         uuid.UUID           `json:"id"`
+	Kind       InsightKind         `json:"kind"`
+	Platform   NullPlatform        `json:"platform"`
+	Content    string              `json:"content"`
+	Evidence   []byte              `json:"evidence"`
+	Confidence pgtype.Numeric      `json:"confidence"`
+	Status     InsightStatus       `json:"status"`
+	Embedding  *pgvector_go.Vector `json:"embedding"`
+	CreatedAt  pgtype.Timestamptz  `json:"created_at"`
+	UpdatedAt  pgtype.Timestamptz  `json:"updated_at"`
 }
 
 type MetricSnapshot struct {
@@ -572,18 +572,18 @@ type Publication struct {
 }
 
 type RawItem struct {
-	ID          uuid.UUID          `json:"id"`
-	SourceID    uuid.UUID          `json:"source_id"`
-	Title       string             `json:"title"`
-	Url         pgtype.Text        `json:"url"`
-	Author      pgtype.Text        `json:"author"`
-	Content     string             `json:"content"`
-	PublishedAt pgtype.Timestamptz `json:"published_at"`
-	ContentHash string             `json:"content_hash"`
-	Embedding   pgvector.Vector    `json:"embedding"`
-	Status      RawItemStatus      `json:"status"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	ID          uuid.UUID           `json:"id"`
+	SourceID    uuid.UUID           `json:"source_id"`
+	Title       string              `json:"title"`
+	Url         pgtype.Text         `json:"url"`
+	Author      pgtype.Text         `json:"author"`
+	Content     string              `json:"content"`
+	PublishedAt pgtype.Timestamptz  `json:"published_at"`
+	ContentHash string              `json:"content_hash"`
+	Embedding   *pgvector_go.Vector `json:"embedding"`
+	Status      RawItemStatus       `json:"status"`
+	CreatedAt   pgtype.Timestamptz  `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz  `json:"updated_at"`
 }
 
 type Source struct {
@@ -600,17 +600,17 @@ type Source struct {
 }
 
 type Topic struct {
-	ID              uuid.UUID          `json:"id"`
-	Title           string             `json:"title"`
-	Angle           string             `json:"angle"`
-	Summary         string             `json:"summary"`
-	RawItemIds      []uuid.UUID        `json:"raw_item_ids"`
-	TargetPlatforms []Platform         `json:"target_platforms"`
-	Status          TopicStatus        `json:"status"`
-	LatestScore     pgtype.Numeric     `json:"latest_score"`
-	Embedding       pgvector.Vector    `json:"embedding"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	ID              uuid.UUID           `json:"id"`
+	Title           string              `json:"title"`
+	Angle           string              `json:"angle"`
+	Summary         string              `json:"summary"`
+	RawItemIds      []uuid.UUID         `json:"raw_item_ids"`
+	TargetPlatforms []Platform          `json:"target_platforms"`
+	Status          TopicStatus         `json:"status"`
+	LatestScore     pgtype.Numeric      `json:"latest_score"`
+	Embedding       *pgvector_go.Vector `json:"embedding"`
+	CreatedAt       pgtype.Timestamptz  `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz  `json:"updated_at"`
 }
 
 type TopicEvaluation struct {

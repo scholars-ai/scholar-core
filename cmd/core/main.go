@@ -12,10 +12,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/scholars-ai/scholar-core/internal/api"
 	"github.com/scholars-ai/scholar-core/internal/config"
+	"github.com/scholars-ai/scholar-core/internal/db"
 )
 
 func main() {
@@ -35,7 +34,7 @@ func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}

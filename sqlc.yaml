@@ -17,3 +17,9 @@ sql:
             go_type:
               import: "github.com/google/uuid"
               type: "NullUUID"
+          - db_type: "vector"
+            nullable: true
+            go_type:
+              import: "github.com/pgvector/pgvector-go"
+              type: "Vector"
+              pointer: true
