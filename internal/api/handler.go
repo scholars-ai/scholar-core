@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -34,9 +35,22 @@ func (h *Server) GetHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Health{Status: "ok", Db: db})
 }
 
+// validTopicStatuses 与 SPEC-002 §3 的状态机、DB enum、shared 契约三处对齐。
+// oapi-codegen 只生成类型别名不做运行时校验，非法值若直传 DB 会引发 enum 转换错误
+// 并冒成 500 —— 那是客户端错误，必须在这里拦成 400。
+var validTopicStatuses = map[TopicStatus]bool{
+	Candidate: true, Scored: true, Approved: true,
+	InWriting: true, Written: true, Rejected: true,
+}
+
 func (h *Server) ListTopics(w http.ResponseWriter, r *http.Request, params ListTopicsParams) {
 	arg := dbgen.ListTopicsParams{Lim: 50}
 	if params.Status != nil {
+		if !validTopicStatuses[*params.Status] {
+			writeError(w, http.StatusBadRequest, "invalid_status",
+				fmt.Sprintf("unknown topic status %q", string(*params.Status)))
+			return
+		}
 		arg.Status = dbgen.NullTopicStatus{TopicStatus: dbgen.TopicStatus(*params.Status), Valid: true}
 	}
 	if params.Limit != nil {
