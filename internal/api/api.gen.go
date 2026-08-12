@@ -12,11 +12,18 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/go-chi/chi/v5"
 	"github.com/oapi-codegen/runtime"
 	openapi_types "github.com/oapi-codegen/runtime/types"
+)
+
+// Defines values for FullTextStrategy.
+const (
+	FetchPage      FullTextStrategy = "fetch_page"
+	RssDescription FullTextStrategy = "rss_description"
 )
 
 // Defines values for HealthDb.
@@ -35,6 +42,28 @@ const (
 	Wechat      Platform = "wechat"
 	Xiaohongshu Platform = "xiaohongshu"
 	Zhihu       Platform = "zhihu"
+)
+
+// Defines values for SourceCategory.
+const (
+	Kol      SourceCategory = "kol"
+	News     SourceCategory = "news"
+	Research SourceCategory = "research"
+	Tutorial SourceCategory = "tutorial"
+)
+
+// Defines values for SourceRole.
+const (
+	Material SourceRole = "material"
+	Signal   SourceRole = "signal"
+)
+
+// Defines values for SourceType.
+const (
+	Crawler SourceType = "crawler"
+	Manual  SourceType = "manual"
+	Rss     SourceType = "rss"
+	Rsshub  SourceType = "rsshub"
 )
 
 // Defines values for TopicStatus.
@@ -61,6 +90,9 @@ type Error struct {
 	Message string `json:"message"`
 }
 
+// FullTextStrategy defines model for FullTextStrategy.
+type FullTextStrategy string
+
 // Health defines model for Health.
 type Health struct {
 	Db     HealthDb     `json:"db"`
@@ -73,8 +105,131 @@ type HealthDb string
 // HealthStatus defines model for Health.Status.
 type HealthStatus string
 
+// IngestUrlRequest defines model for IngestUrlRequest.
+type IngestUrlRequest struct {
+	// Note 备注（为什么觉得这条值得写）
+	Note *string `json:"note,omitempty"`
+	Url  string  `json:"url"`
+}
+
+// JobAccepted defines model for JobAccepted.
+type JobAccepted struct {
+	MsgId int64  `json:"msgId"`
+	Queue string `json:"queue"`
+}
+
 // Platform defines model for Platform.
 type Platform string
+
+// RejectTopicRequest defines model for RejectTopicRequest.
+type RejectTopicRequest struct {
+	// Reason 否决原因（留痕，供后续 rubric 校准参考）
+	Reason *string `json:"reason,omitempty"`
+}
+
+// SchedulerSettings defines model for SchedulerSettings.
+type SchedulerSettings struct {
+	SourceFetch   SourceFetchSchedule   `json:"sourceFetch"`
+	TopicEvaluate TopicEvaluateSchedule `json:"topicEvaluate"`
+	TopicScout    TopicScoutSchedule    `json:"topicScout"`
+}
+
+// SchedulerSettingsPatch 仅传需要改的分组
+type SchedulerSettingsPatch struct {
+	SourceFetch   *SourceFetchSchedule   `json:"sourceFetch,omitempty"`
+	TopicEvaluate *TopicEvaluateSchedule `json:"topicEvaluate,omitempty"`
+	TopicScout    *TopicScoutSchedule    `json:"topicScout,omitempty"`
+}
+
+// Source defines model for Source.
+type Source struct {
+	Category SourceCategory `json:"category"`
+	Enabled  bool           `json:"enabled"`
+
+	// FetchConfig 单源采集配置；intervalMinutes 为空表示沿用全局默认
+	FetchConfig SourceFetchConfig  `json:"fetchConfig"`
+	Id          openapi_types.UUID `json:"id"`
+	Name        string             `json:"name"`
+	Type        SourceType         `json:"type"`
+	Url         *string            `json:"url"`
+	Weight      float32            `json:"weight"`
+}
+
+// SourceCategory defines model for SourceCategory.
+type SourceCategory string
+
+// SourceFetchConfig 单源采集配置；intervalMinutes 为空表示沿用全局默认
+type SourceFetchConfig struct {
+	FullText        *FullTextStrategy `json:"fullText,omitempty"`
+	IntervalMinutes *int              `json:"intervalMinutes"`
+	MaxAgeDays      *int              `json:"maxAgeDays,omitempty"`
+	MaxItems        *int              `json:"maxItems,omitempty"`
+	Role            *SourceRole       `json:"role,omitempty"`
+}
+
+// SourceFetchSchedule defines model for SourceFetchSchedule.
+type SourceFetchSchedule struct {
+	DefaultIntervalMinutes int  `json:"defaultIntervalMinutes"`
+	Enabled                bool `json:"enabled"`
+}
+
+// SourceHealth defines model for SourceHealth.
+type SourceHealth struct {
+	ConsecutiveFailures int `json:"consecutiveFailures"`
+
+	// ItemCount 该源累计入库条目数
+	ItemCount     *int       `json:"itemCount,omitempty"`
+	LastError     *string    `json:"lastError"`
+	LastRunAt     *time.Time `json:"lastRunAt"`
+	LastSuccessAt *time.Time `json:"lastSuccessAt"`
+	NextRunAt     *time.Time `json:"nextRunAt"`
+}
+
+// SourceInput defines model for SourceInput.
+type SourceInput struct {
+	Category SourceCategory `json:"category"`
+	Enabled  *bool          `json:"enabled,omitempty"`
+
+	// FetchConfig 单源采集配置；intervalMinutes 为空表示沿用全局默认
+	FetchConfig *SourceFetchConfig `json:"fetchConfig,omitempty"`
+	Name        string             `json:"name"`
+	Type        SourceType         `json:"type"`
+	Url         *string            `json:"url"`
+	Weight      *float32           `json:"weight,omitempty"`
+}
+
+// SourcePatch 仅传需要改的字段
+type SourcePatch struct {
+	Category *SourceCategory `json:"category,omitempty"`
+	Enabled  *bool           `json:"enabled,omitempty"`
+
+	// FetchConfig 单源采集配置；intervalMinutes 为空表示沿用全局默认
+	FetchConfig *SourceFetchConfig `json:"fetchConfig,omitempty"`
+	Name        *string            `json:"name,omitempty"`
+	Url         *string            `json:"url"`
+	Weight      *float32           `json:"weight,omitempty"`
+}
+
+// SourceRole defines model for SourceRole.
+type SourceRole string
+
+// SourceType defines model for SourceType.
+type SourceType string
+
+// SourceWithHealth defines model for SourceWithHealth.
+type SourceWithHealth struct {
+	Category SourceCategory `json:"category"`
+	Enabled  bool           `json:"enabled"`
+
+	// FetchConfig 单源采集配置；intervalMinutes 为空表示沿用全局默认
+	FetchConfig SourceFetchConfig  `json:"fetchConfig"`
+	Health      SourceHealth       `json:"health"`
+	Id          openapi_types.UUID `json:"id"`
+	Name        string             `json:"name"`
+	Type        SourceType         `json:"type"`
+	Url         *string            `json:"url"`
+	Weight      float32            `json:"weight"`
+}
 
 // Topic defines model for Topic.
 type Topic struct {
@@ -88,8 +243,50 @@ type Topic struct {
 	Title           string               `json:"title"`
 }
 
+// TopicEvaluateSchedule defines model for TopicEvaluateSchedule.
+type TopicEvaluateSchedule struct {
+	DailyTokenBudget *int `json:"dailyTokenBudget"`
+	Enabled          bool `json:"enabled"`
+	MaxConcurrency   int  `json:"maxConcurrency"`
+}
+
+// TopicEvaluation defines model for TopicEvaluation.
+type TopicEvaluation struct {
+	AgentRunId *openapi_types.UUID `json:"agentRunId"`
+	CreatedAt  time.Time           `json:"createdAt"`
+
+	// DimensionReasons 逐维度理由
+	DimensionReasons *map[string]string `json:"dimensionReasons,omitempty"`
+	DimensionScores  map[string]float32 `json:"dimensionScores"`
+	Id               openapi_types.UUID `json:"id"`
+	JudgeModel       string             `json:"judgeModel"`
+	Rationale        string             `json:"rationale"`
+
+	// RubricVersion 如 topic@v1
+	RubricVersion string             `json:"rubricVersion"`
+	TopicId       openapi_types.UUID `json:"topicId"`
+	TotalScore    float32            `json:"totalScore"`
+
+	// VetoedDimension 触发一票否决的维度 key（topic@v1 暂无 veto 维度，但字段就位）
+	VetoedDimension *string `json:"vetoedDimension"`
+
+	// WeightVersion 生效权重版本（weight_sets.version），使评分可回放
+	WeightVersion *int `json:"weightVersion"`
+}
+
+// TopicScoutSchedule defines model for TopicScoutSchedule.
+type TopicScoutSchedule struct {
+	Enabled     bool     `json:"enabled"`
+	MinNewItems int      `json:"minNewItems"`
+	Times       []string `json:"times"`
+	Timezone    string   `json:"timezone"`
+}
+
 // TopicStatus defines model for TopicStatus.
 type TopicStatus string
+
+// SourceId defines model for SourceId.
+type SourceId = openapi_types.UUID
 
 // TopicId defines model for TopicId.
 type TopicId = openapi_types.UUID
@@ -97,8 +294,16 @@ type TopicId = openapi_types.UUID
 // BadRequest defines model for BadRequest.
 type BadRequest = Error
 
+// Conflict defines model for Conflict.
+type Conflict = Error
+
 // NotFound defines model for NotFound.
 type NotFound = Error
+
+// ListSourcesParams defines parameters for ListSources.
+type ListSourcesParams struct {
+	Enabled *bool `form:"enabled,omitempty" json:"enabled,omitempty"`
+}
 
 // ListTopicsParams defines parameters for ListTopics.
 type ListTopicsParams struct {
@@ -107,14 +312,59 @@ type ListTopicsParams struct {
 	Offset *int         `form:"offset,omitempty" json:"offset,omitempty"`
 }
 
+// IngestUrlJSONRequestBody defines body for IngestUrl for application/json ContentType.
+type IngestUrlJSONRequestBody = IngestUrlRequest
+
+// UpdateSchedulerSettingsJSONRequestBody defines body for UpdateSchedulerSettings for application/json ContentType.
+type UpdateSchedulerSettingsJSONRequestBody = SchedulerSettingsPatch
+
+// CreateSourceJSONRequestBody defines body for CreateSource for application/json ContentType.
+type CreateSourceJSONRequestBody = SourceInput
+
+// UpdateSourceJSONRequestBody defines body for UpdateSource for application/json ContentType.
+type UpdateSourceJSONRequestBody = SourcePatch
+
 // CreateManualTopicJSONRequestBody defines body for CreateManualTopic for application/json ContentType.
 type CreateManualTopicJSONRequestBody = CreateTopicRequest
+
+// RejectTopicJSONRequestBody defines body for RejectTopic for application/json ContentType.
+type RejectTopicJSONRequestBody = RejectTopicRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// 健康检查（含 DB 连通性）
 	// (GET /healthz)
 	GetHealth(w http.ResponseWriter, r *http.Request)
+	// 手动投喂 URL（刷到好东西时的一键入口，SPEC-003 §2.2）
+	// (POST /v1/ingest/url)
+	IngestUrl(w http.ResponseWriter, r *http.Request)
+	// 立即跑一次选题聚合（不等调度；忽略 minNewItems）
+	// (POST /v1/scout/run)
+	TriggerTopicScout(w http.ResponseWriter, r *http.Request)
+	// 读调度设置
+	// (GET /v1/settings/schedules)
+	GetSchedulerSettings(w http.ResponseWriter, r *http.Request)
+	// 改调度设置（≤ 1 个 tick 生效；重启不被环境变量覆盖）
+	// (PATCH /v1/settings/schedules)
+	UpdateSchedulerSettings(w http.ResponseWriter, r *http.Request)
+	// 信源列表（含采集健康状态）
+	// (GET /v1/sources)
+	ListSources(w http.ResponseWriter, r *http.Request, params ListSourcesParams)
+	// 新增信源
+	// (POST /v1/sources)
+	CreateSource(w http.ResponseWriter, r *http.Request)
+	// 删除信源（已采集的 raw_items 保留，仅解除订阅）
+	// (DELETE /v1/sources/{sourceId})
+	DeleteSource(w http.ResponseWriter, r *http.Request, sourceId SourceId)
+	// 信源详情
+	// (GET /v1/sources/{sourceId})
+	GetSource(w http.ResponseWriter, r *http.Request, sourceId SourceId)
+	// 修改信源（含启停与单独采集频率覆盖）
+	// (PATCH /v1/sources/{sourceId})
+	UpdateSource(w http.ResponseWriter, r *http.Request, sourceId SourceId)
+	// 立即采集该信源（不等调度）
+	// (POST /v1/sources/{sourceId}/fetch)
+	TriggerSourceFetch(w http.ResponseWriter, r *http.Request, sourceId SourceId)
 	// 选题列表（按状态过滤，latestScore 倒序）
 	// (GET /v1/topics)
 	ListTopics(w http.ResponseWriter, r *http.Request, params ListTopicsParams)
@@ -124,6 +374,15 @@ type ServerInterface interface {
 	// 选题详情
 	// (GET /v1/topics/{topicId})
 	GetTopic(w http.ResponseWriter, r *http.Request, topicId TopicId)
+	// 人工确认选题（scored → approved）
+	// (POST /v1/topics/{topicId}/approve)
+	ApproveTopic(w http.ResponseWriter, r *http.Request, topicId TopicId)
+	// 选题的评分历史（维度分 + 理由 + rubric/权重版本，倒序）
+	// (GET /v1/topics/{topicId}/evaluations)
+	ListTopicEvaluations(w http.ResponseWriter, r *http.Request, topicId TopicId)
+	// 人工否决选题（candidate/scored → rejected）
+	// (POST /v1/topics/{topicId}/reject)
+	RejectTopic(w http.ResponseWriter, r *http.Request, topicId TopicId)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -133,6 +392,66 @@ type Unimplemented struct{}
 // 健康检查（含 DB 连通性）
 // (GET /healthz)
 func (_ Unimplemented) GetHealth(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 手动投喂 URL（刷到好东西时的一键入口，SPEC-003 §2.2）
+// (POST /v1/ingest/url)
+func (_ Unimplemented) IngestUrl(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 立即跑一次选题聚合（不等调度；忽略 minNewItems）
+// (POST /v1/scout/run)
+func (_ Unimplemented) TriggerTopicScout(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 读调度设置
+// (GET /v1/settings/schedules)
+func (_ Unimplemented) GetSchedulerSettings(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 改调度设置（≤ 1 个 tick 生效；重启不被环境变量覆盖）
+// (PATCH /v1/settings/schedules)
+func (_ Unimplemented) UpdateSchedulerSettings(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 信源列表（含采集健康状态）
+// (GET /v1/sources)
+func (_ Unimplemented) ListSources(w http.ResponseWriter, r *http.Request, params ListSourcesParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 新增信源
+// (POST /v1/sources)
+func (_ Unimplemented) CreateSource(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 删除信源（已采集的 raw_items 保留，仅解除订阅）
+// (DELETE /v1/sources/{sourceId})
+func (_ Unimplemented) DeleteSource(w http.ResponseWriter, r *http.Request, sourceId SourceId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 信源详情
+// (GET /v1/sources/{sourceId})
+func (_ Unimplemented) GetSource(w http.ResponseWriter, r *http.Request, sourceId SourceId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 修改信源（含启停与单独采集频率覆盖）
+// (PATCH /v1/sources/{sourceId})
+func (_ Unimplemented) UpdateSource(w http.ResponseWriter, r *http.Request, sourceId SourceId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 立即采集该信源（不等调度）
+// (POST /v1/sources/{sourceId}/fetch)
+func (_ Unimplemented) TriggerSourceFetch(w http.ResponseWriter, r *http.Request, sourceId SourceId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -154,6 +473,24 @@ func (_ Unimplemented) GetTopic(w http.ResponseWriter, r *http.Request, topicId 
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// 人工确认选题（scored → approved）
+// (POST /v1/topics/{topicId}/approve)
+func (_ Unimplemented) ApproveTopic(w http.ResponseWriter, r *http.Request, topicId TopicId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 选题的评分历史（维度分 + 理由 + rubric/权重版本，倒序）
+// (GET /v1/topics/{topicId}/evaluations)
+func (_ Unimplemented) ListTopicEvaluations(w http.ResponseWriter, r *http.Request, topicId TopicId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 人工否决选题（candidate/scored → rejected）
+// (POST /v1/topics/{topicId}/reject)
+func (_ Unimplemented) RejectTopic(w http.ResponseWriter, r *http.Request, topicId TopicId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // ServerInterfaceWrapper converts contexts to parameters.
 type ServerInterfaceWrapper struct {
 	Handler            ServerInterface
@@ -168,6 +505,203 @@ func (siw *ServerInterfaceWrapper) GetHealth(w http.ResponseWriter, r *http.Requ
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetHealth(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// IngestUrl operation middleware
+func (siw *ServerInterfaceWrapper) IngestUrl(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.IngestUrl(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// TriggerTopicScout operation middleware
+func (siw *ServerInterfaceWrapper) TriggerTopicScout(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.TriggerTopicScout(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetSchedulerSettings operation middleware
+func (siw *ServerInterfaceWrapper) GetSchedulerSettings(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSchedulerSettings(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateSchedulerSettings operation middleware
+func (siw *ServerInterfaceWrapper) UpdateSchedulerSettings(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateSchedulerSettings(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListSources operation middleware
+func (siw *ServerInterfaceWrapper) ListSources(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListSourcesParams
+
+	// ------------- Optional query parameter "enabled" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "enabled", r.URL.Query(), &params.Enabled)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "enabled", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListSources(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateSource operation middleware
+func (siw *ServerInterfaceWrapper) CreateSource(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateSource(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteSource operation middleware
+func (siw *ServerInterfaceWrapper) DeleteSource(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "sourceId" -------------
+	var sourceId SourceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sourceId", chi.URLParam(r, "sourceId"), &sourceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sourceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteSource(w, r, sourceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetSource operation middleware
+func (siw *ServerInterfaceWrapper) GetSource(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "sourceId" -------------
+	var sourceId SourceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sourceId", chi.URLParam(r, "sourceId"), &sourceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sourceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetSource(w, r, sourceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateSource operation middleware
+func (siw *ServerInterfaceWrapper) UpdateSource(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "sourceId" -------------
+	var sourceId SourceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sourceId", chi.URLParam(r, "sourceId"), &sourceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sourceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateSource(w, r, sourceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// TriggerSourceFetch operation middleware
+func (siw *ServerInterfaceWrapper) TriggerSourceFetch(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "sourceId" -------------
+	var sourceId SourceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sourceId", chi.URLParam(r, "sourceId"), &sourceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sourceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.TriggerSourceFetch(w, r, sourceId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -250,6 +784,81 @@ func (siw *ServerInterfaceWrapper) GetTopic(w http.ResponseWriter, r *http.Reque
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetTopic(w, r, topicId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ApproveTopic operation middleware
+func (siw *ServerInterfaceWrapper) ApproveTopic(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "topicId" -------------
+	var topicId TopicId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "topicId", chi.URLParam(r, "topicId"), &topicId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "topicId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ApproveTopic(w, r, topicId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListTopicEvaluations operation middleware
+func (siw *ServerInterfaceWrapper) ListTopicEvaluations(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "topicId" -------------
+	var topicId TopicId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "topicId", chi.URLParam(r, "topicId"), &topicId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "topicId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListTopicEvaluations(w, r, topicId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RejectTopic operation middleware
+func (siw *ServerInterfaceWrapper) RejectTopic(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "topicId" -------------
+	var topicId TopicId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "topicId", chi.URLParam(r, "topicId"), &topicId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "topicId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RejectTopic(w, r, topicId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -376,6 +985,36 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/healthz", wrapper.GetHealth)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/ingest/url", wrapper.IngestUrl)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/scout/run", wrapper.TriggerTopicScout)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/settings/schedules", wrapper.GetSchedulerSettings)
+	})
+	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/v1/settings/schedules", wrapper.UpdateSchedulerSettings)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/sources", wrapper.ListSources)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/sources", wrapper.CreateSource)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/v1/sources/{sourceId}", wrapper.DeleteSource)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/sources/{sourceId}", wrapper.GetSource)
+	})
+	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/v1/sources/{sourceId}", wrapper.UpdateSource)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/sources/{sourceId}/fetch", wrapper.TriggerSourceFetch)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/topics", wrapper.ListTopics)
 	})
 	r.Group(func(r chi.Router) {
@@ -384,6 +1023,15 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/topics/{topicId}", wrapper.GetTopic)
 	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/topics/{topicId}/approve", wrapper.ApproveTopic)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/topics/{topicId}/evaluations", wrapper.ListTopicEvaluations)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/topics/{topicId}/reject", wrapper.RejectTopic)
+	})
 
 	return r
 }
@@ -391,29 +1039,63 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 // Base64 encoded, gzipped, json marshaled Swagger object
 var swaggerSpec = []string{
 
-	"H4sIAAAAAAAC/8xXXW8TRxf+K6t538vFdoDe+I6PtI0KLQLuIKom3ok9dHdmmZ1NCMjSBhKSQBCBBIgS",
-	"SBuKSWhLItQ2WI4L/4V6x/aV/0I1M/5Y25uQlqjqTTLrPZ/POec5szdAhjouJYhwD6RvABcy6CCOmHq6",
-	"SF2cGbLkEROQBi7kOWACAh0E0oA335qAoas+ZsgCac58ZAIvk0MOlGqjlDmQgzTwfSwl+YQrVT3OMMmC",
-	"fD4vlT2XEg8pjyehdR5d9ZHH5VOGEo6IOkLXtXEGckxJ8opHifyt4+b/DI2CNPhfspNNUr/1koOMUaZd",
-	"WcjLMOxKIyANattvxZub9Wdr4tdHIG+Cryn/nPrE+hc8/z4lSguV4r3w9XL4dBNIiaaStHmKIciRAj8C",
-	"hsuoixjHGihIsjaShx5ETeD5jgPZROw7DlkW8XM25LIwyhDmSB/2y6SlIW04mAxpnYF2PSFjcEI5wFyH",
-	"5WByBpEsz0XF2mWPtsylppLZzKmTQX+8w21TdOQKynDpUqPcB1CGWvH4OMjzYDbuXU9YykJHPs73lwja",
-	"MsVe59aI/IuI70hD9DtgAouOk4iNSL045L7XIz/8McyaWqZ0FRdZu2IRu9cwpDlKsl7OBya4nsPq/zjK",
-	"5CCPDU214N/pPWwdYOhNYEOOPH4hQ5nuFXgNOzLEgVRK9Zd+SpmA+LYNR6QzTSxNS8R3RhCTlhgcl804",
-	"ZHX38kcj6O3bThH2GwOFxwUt+p+ZtP37RKe/54BF8OuP2ex0WbRice0WRSbScRlILGxBrpxKZRkNdF1G",
-	"x9QRk2/HGeYycBPIE0dE7RNpF1lxYyC7jIxSNWVdpOplctSGzDsCsVEproR31sUPxfD9LeP84IWLxolz",
-	"Q0ZYeFAtvWyUZ8+mjPpPm2Jtp1Ger6/cr8/MVzfvVp8/EHOvwjePGuW5P4Obl0m4tVb5Y7G6uyjWpqor",
-	"U+G9R5ViUCndDbfWxLOCKC2I5W0jkWiXrhVAQv+QkMvC+BAsfQiWDPH0F/F4prK7Uym+rq5MXSZaxhDL",
-	"2+H0joqutnE7XH3XKK9Wii9qwXSlGNRmfhPBRnXpjXFqyKgHC+J1ofbydnX1caM8W9uYrOwuhqVF4/zg",
-	"idNnB42wHIild/UnW/Xny60M2qVvo3NEFkG6AyYYQ8zT0KUSA4mULCN1EYEuBmlwLJFKHAOmWvmqpMmc",
-	"4rrr8pxFaiNJTlB7UV4RwBeIN+mwZ6cfTaUObaU2PcTs1G++0mu0NZMgnCyEpbfix0B8X2iUZ8OFn43T",
-	"J43a+7V6sCKCjUZ5TikkxwaS6ibj7ZnZGezxi1rE7LohXWrei676SE1T82LUnpqD5dTFKnkz3qaNHcy7",
-	"TFpoFPo2B+nPJGm2KPRoF4V2eAMTjrKSM/dyQEdHPbSHhx5W7jM5/IkV714vbZ48EGHqHRVD6ZxyaEcI",
-	"MoJAN0MqLy35fnI7QKvVg7n68+Vw9kltfbNRnhXzc9U7OyKYrL2fEbsvGuX5CH0aYfAwLN1X7WcCl3ox",
-	"DacvgGch8aGt89MhI4+fpNbEoU1TzEUz3w2PXLv5vuoOHFoEzer1Y6xDsyRGx3U3xZlpx5WMfDh010bM",
-	"3Q3vbIazq+FuSdeptQDmxdJOo7xSfVWqbq3XJxfF/YfhdKFSDMSzda1lKGLoZ4rkjea3T34/NmxVrocx",
-	"4vLoiCRb31yfPFT/CHbZ2hLx4x9HvP25FDcLte2X4ta09uAhNtZK3mc2SIOk3DH54fxfAQAA//+HH4ju",
-	"fg4AAA==",
+	"H4sIAAAAAAAC/+RbX1cTSdr/Kn36nYv3PRNJQJ3zDlerqLvsjjMeYHYvHNZTdIrQ2umO3dUg4+acoPwJ",
+	"CoIjCIKiMASYUYN/ZiSGIOfsR3FS3Z2rfIU91dXpdKe7kyg4emavjEnVU8//51fPU1xlOSmekEQoIoVt",
+	"v8omgAziEEHZ/F+3pMoc7IySz7zItrMJgAbYECuCOGTbWaXyc4iV4WWVl2GUbUeyCkOswg3AOCD7+iU5",
+	"DhDbzqoqT1ai4YS5F8m8GGOTyRDbIyV4LvAQZP16kDOSZLOSkEQFmnKdBNEueFmFCiL/4yQRQdH8CBIJ",
+	"gecA4iUxfFGRRPJd9ZjPZNjPtrP/E67qLEx/VcKnZVmS6VFRqHAynyBE2HbW2N7Rnl8rPVjRXs6zyRDb",
+	"IYn9As/9DicXc7fw3h08Oa3feKWlRvD4C/3nkXIhjTcsduj32q8jxt6T31IjpYlpPDtd3F/V8rO/pUbw",
+	"jYfG9T288wKP3NfntsqFScL+1xI6I6li9HdQ3K+jWn62mJvGTxfx/S3TVaxNhGaHDAGCpu84bJmQpQSU",
+	"EU/tDMSYAMmHGocIsYoajwN52Pc3BOQYROcEgIhfmYR4BOmHepJUdhAacV7spHtabXcEsgyGzQN4RNmK",
+	"8+JXUIyhAecyR2RUPf68tSlkyVSVwMtvr01K6rsIOUSOpFr2KIiTov76iUNFATG/32rYMilU1/udfUYV",
+	"hB54BXUjGSAYM5UORTVOtsuKcsFp9hDbDxE3cCHhJlZl7C8QCERftZJE+5xkpUtsiI1KQ6IvDQUBpCo1",
+	"63sbGcDaFSJH+YnZKcaggr6VhUB3FCVkatTt53h9Qnu5VS6ki7l8cTdVfJ02NifxmwVj/572YBWnCvjN",
+	"Ah6/R+LPRxZVFtwZUObZRpKQPX4S/FXqO8FxMIFg1Mt8XInRHG0fxYvoi2PVw3gRwRiUCaHLKlSb8B26",
+	"LGSR9uPIDimHra7wQBqQxJgyoLIh9vsB3vx3CHIDAPmauwsScvUzhQyBlbVqjDO7gcdf4lsP8fKjciGt",
+	"z9/TF+bLhanim2U8e0vffcrIap/Mc4z2aBVPjOOZa0bquq+pkj7idXMDMKoKUO6GCPFiTPEyRmvsGRIU",
+	"jfJPd3VphbCZbYjgpweBoALqfvVo9DgXe6h0c5KKmiJhrqzurw0lh1Au0rXc9jajtHPAUk5N+dsdKxYe",
+	"le6njI0Rbe61vjSK0+P67igb+qOq2Ksqk12ftE/ysETLX2NxOyqrkyEWiqBPoOnBOq1PkgQIRPKjmboJ",
+	"vuFj76BIa0MyxPLRJsBcBRg2qJ6VL5pho4esrOZSURUEImUFZ3ooD0E+NmAaKQ6u8HGSllrNkk8/R+wt",
+	"ohrvIxmxxv1NsUwprJX06FDVLvYZVY271dsbaO0Oh20rKVOEQ4oJoBUIZBpzKpJkHpBDL0mCb9r0msib",
+	"HafntfxsaWKitDxeGpvW97LlwjKpA/IgEM7yooqgwhRzef2nvLG6pa/ntRf7+twWHtvCz1Ol3UUju+6J",
+	"xn4LLTQynQdVEAdyH+22UCTy/xGHlY6HggztKGRxcOVEDJ4Cw25aR7847qDUGrCzswIa7X3HI5FG+2RJ",
+	"aNJru6T6Ye/OUl7ABPuBKqDOd1OZl+E6GaHG7aueHHB2sFMHoT6OXOk4FfGD8AzgBVW2JPCGooNjAuY7",
+	"JJVeXGovaxktP6v/sm1kV/FYBufvaA9W9eWsNv+MDTUgKwAF2TC7YQ4hq7tU8QRypbwoQPAI4s3M0BSJ",
+	"bpXjoKIchIwIrxyME8+NwGuTYMt2igkVfaAKZblZDduHWLA+oUpkyxppOR56z7rkLkm2CYKN1zzyerqg",
+	"ZX/15PpPFIc0adYPCRcCFN5lVYdKYY8DBK0yrvAxEdSr5D2WFzqu3gQTKMqA2keSGxBVkxAngyEBynUo",
+	"/YNHA9WMDAThm362/XwzimaTodpIH7AJNd5uHVrrtxYJr5/2VrqL79IaahKFCgBBBXVzkgxri6bbuAH+",
+	"UTF2iJXBEIEKnVF3q6khB7VtpWpbo/HdgS79ZBph9SsKFT+w/+XQn5fnULVv47SYX07zv5h5gRPgheEe",
+	"6RIUT6rRGES1gKMxqqybvOLgSockcqosQ5EbdsPOtvroMRBv1dAMeWVopA+eNkdqYigGRQIdOn0jpmFe",
+	"5MwObrQO8PBsifJxKCq8JHaZ/RrKRTTKE/6AcM7FnXezq0iVUrP67i84v6HPjutzz1kfBdinmT5T9zBH",
+	"+NdN7T6nNJlvLhJDnZWiUPAVTgaULf+cRptUf4eywvt2uTauMWb34U+Drb6ZpjqhaZyVJASEJtKiRzGD",
+	"EEkweqqicx9wvrmBZ24Xcyk9s0X7cvrSKLUhcwkOlwvpigyMtnRNW3jEEJIMXVEuTBX3xikOwc+eF/em",
+	"aZeuyeodqDp97qE2n9YeXC9NTOuTae3+k3IhTfdcUCBSWgbpznJh0mRh39gexelxPLONl1e0uTds44Th",
+	"mw2rUzGXaWv59Tqxy0JOv3G5mDM6A3ODuwPlSQ/10xwvfg2HvFfk1kiAozjyJ8kO7mqUAAhBmdjjn/97",
+	"PtLaez5y5Mvef7Wdjxw52vt/7ecjR47Trz7z89jqVb3tWMOCFYffS+I7D2+qqZjy7qDkVkWwrj0zCw6I",
+	"UZ5kS1LjiDUJeZBIyNKg+ZEXLwzJPCLshFjyCUHRbAIRujDqN/AwWyj9ktfLFW5AEoCsHAE8U8wt4Rur",
+	"2qMc3r/OdJ3u7mFOnOtkcOa2TqIsfTbClH7e0lZelQtTpaWZ0sSUvnVTX7utTf6En8+XC5O/pa59J+Ls",
+	"SnHvjr57R1sZJfeD6fliLlXM38TZFe0BuYNri9tMS4sNKSoMtNAvWi4qksi8Tc29Tc0x2v0n2t2J4u6r",
+	"Yu6pvjT6nUjXMNriNh57ZXJnbI7j5TflwnIxt26kxoq5lDHxi5ba1OeeMx2dTCk1qz3NGBvj+vLdciFt",
+	"bI4Ud+/g/B2m6/SJU2dPM7iQ0ubelBaypbXFigQ2JLG1c4QYgRzHkmRm5Qs20tLaEiFmlBJQBAmebWeP",
+	"tkRajpLLEEADpknDFMF+Tz5biIIEkhmaJO2yf4bIwr41k+y2SOTQJrE2uvbUym/+RqevFazI4pEMzu9o",
+	"P6a0h5lyIY1nHzOnTjLG/koptaSlNs1ZcTLEhgdbw7w5Fgtbl6WEpPiIZ4/OrCk/VNBJKTp8aJJ5RnNJ",
+	"d4CSvJv0aLbt0M53DtZ81It3XuCxTGnxIXGTY9SifuRs/sKOBwxuw2iTN/GNLe3GPL57jfm26ytinPQO",
+	"Tj/Dmb1i7r6R2dcWXulLo8VcqjSXxWMZPPNjuTDVfe50x5FI5Cjz7822ljan+RSS48OyKgZbr0fmYzEo",
+	"9zjHOJ+IKr9srEr7PYZbkfrjm3j6pbFD8Ib2ZLWUmiytLRojS3g2bY5qp/Wnk8az6yayWMb7e/p8hnEk",
+	"cpcKrTmVKQMplUq9OPfOBD9gyHsPayb6je1dKrqRfaPvZYmqE5VOkFuebxNRx13KLdLhh3nAZLCpYP8I",
+	"Oj1wrM+9dpqhXEi/nVxnWpli7mcG8dwlhmLTcmHZfNmzXcxNG2uP9VvbeO06nlksTcxUKp7DV80+S7CD",
+	"fsUrqNtaE3K9Fjtvvd66rELzVm4936oin6r2PHOC3gOao6muhKd35WmhNOH69HUUTi8Yq1u08NHpFy2I",
+	"9EGV9VLKP1nSZ0tWN+wDhYGjsd6U77ce8tF+mqRyR9/L6w+WybW7z/DaCjVcrZ+Hr1beMCYp6BUgHeC7",
+	"jXbK/N42Wo3b+3FVXRK2H1H6uPkxL9T+WmI6LFOYgh9rLLj9Jq8GpKUfle6tU8GJr+68oL6qL40yMhi6",
+	"YEYNU9x/oM/fI3fT3TFj88fSvXUju1ZaHLO8OLBMHb4yIofshs5QD87A769fqllje0O7Pta4Bh6Kvj5U",
+	"svg4hTIwWbxndTyoObPa3OtquMw+xrPbeOR+MXcLT8/rN59Y7xzWbuu3JgIrpyOjhPsrT4rq4uZu12Oo",
+	"wwunj4W538kChwHSqV2M7YxtOzc8r9rI7JrVBzc9dElT2MaeLDSnRtfkJRnypynwcR65SNqT3eMRx2C3",
+	"rdFTkqADpP5+BQac0KDzduCc7e4P2qitKfhG53g+Yy+znemAlYF9U/OUynpvo60J9EdvgTb606YmKeIz",
+	"9ie03fVyYcoxYmJw6gecn2kCDJ41J69Uvg+T5H3eyv/OwNCy3uHiQp/OB04v4908tVOlGTmlzb0qF5b0",
+	"n/J6drU0ckeb+QGPZci9/sEq3UWHH95MEb5q9dmT9W7sFcu9W+qu/NXLBwVCgWo/OPqxOiIW+glQW9jq",
+	"RwcXwRN0wX+NDg9W8Ir5PN7J6KtZI7tuOzlt/jNvx39gKu3/eq4chvZIt4lSeNqx+KOZp/kC4RhXN3m9",
+	"P4wo0JdGrbHerXE886JcSNOhI06PM58zdMDMfG79qUDYPSycctSJIIvRmU1wEDn+wuGARjr82uPz1xdJ",
+	"71/k/bEDlk6r7YC1J3dhR+hW5nLUEQgRKA9WbGhOT9gwSPBssjf5nwAAAP//Moq56LU5AAA=",
 }
 
 // GetSwagger returns the content of the embedded swagger specification file

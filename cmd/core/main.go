@@ -15,6 +15,8 @@ import (
 	"github.com/scholars-ai/scholar-core/internal/api"
 	"github.com/scholars-ai/scholar-core/internal/config"
 	"github.com/scholars-ai/scholar-core/internal/db"
+	"github.com/scholars-ai/scholar-core/internal/harvester"
+	"github.com/scholars-ai/scholar-core/internal/scheduler"
 )
 
 func main() {
@@ -39,6 +41,14 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	defer pool.Close()
+
+	// 调度与收割常驻协程：随主 ctx 一起优雅退出
+	sched := scheduler.New(pool, log)
+	if err := sched.Seed(ctx); err != nil { // 首次启动写默认值；已有配置则 no-op（SPEC-008 §3.2）
+		return err
+	}
+	go sched.Run(ctx)
+	go harvester.New(pool, log).Run(ctx, 15*time.Second)
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)

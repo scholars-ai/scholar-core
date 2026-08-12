@@ -586,6 +586,22 @@ type RawItem struct {
 	UpdatedAt   pgtype.Timestamptz  `json:"updated_at"`
 }
 
+type ScheduleRun struct {
+	ID          uuid.UUID          `json:"id"`
+	ScheduleKey string             `json:"schedule_key"`
+	PlannedAt   pgtype.Timestamptz `json:"planned_at"`
+	EnqueuedAt  pgtype.Timestamptz `json:"enqueued_at"`
+	Queue       string             `json:"queue"`
+	MsgID       pgtype.Int8        `json:"msg_id"`
+	Note        pgtype.Text        `json:"note"`
+}
+
+type SchedulerSetting struct {
+	ID        bool               `json:"id"`
+	Settings  []byte             `json:"settings"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Source struct {
 	ID          uuid.UUID          `json:"id"`
 	Name        string             `json:"name"`
@@ -597,6 +613,16 @@ type Source struct {
 	FetchConfig []byte             `json:"fetch_config"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type SourceHealth struct {
+	SourceID            uuid.UUID          `json:"source_id"`
+	LastRunAt           pgtype.Timestamptz `json:"last_run_at"`
+	LastSuccessAt       pgtype.Timestamptz `json:"last_success_at"`
+	NextRunAt           pgtype.Timestamptz `json:"next_run_at"`
+	ConsecutiveFailures int32              `json:"consecutive_failures"`
+	LastError           pgtype.Text        `json:"last_error"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Topic struct {
