@@ -301,7 +301,12 @@ func (h *Server) GetSchedulerSettings(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, "get settings", err)
 		return
 	}
-	writeRaw(w, http.StatusOK, row.Settings)
+	settings := scheduler.DefaultSettings()
+	if err := json.Unmarshal(row.Settings, &settings); err != nil {
+		h.internalError(w, "decode settings", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
 }
 
 func (h *Server) UpdateSchedulerSettings(w http.ResponseWriter, r *http.Request) {
