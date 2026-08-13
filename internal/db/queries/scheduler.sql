@@ -18,6 +18,11 @@ values ($1, $2, $3, $4, $5)
 on conflict (schedule_key, planned_at) do nothing
 returning id;
 
+-- name: UpdateScheduleRunMsgID :exec
+update schedule_runs
+set msg_id = $1
+where id = $2;
+
 -- name: RecentScheduleRuns :many
 select * from schedule_runs order by enqueued_at desc limit $1;
 

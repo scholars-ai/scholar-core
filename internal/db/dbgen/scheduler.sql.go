@@ -130,6 +130,22 @@ func (q *Queries) SeedSchedulerSettings(ctx context.Context, settings []byte) er
 	return err
 }
 
+const updateScheduleRunMsgID = `-- name: UpdateScheduleRunMsgID :exec
+update schedule_runs
+set msg_id = $1
+where id = $2
+`
+
+type UpdateScheduleRunMsgIDParams struct {
+	MsgID pgtype.Int8 `json:"msg_id"`
+	ID    uuid.UUID   `json:"id"`
+}
+
+func (q *Queries) UpdateScheduleRunMsgID(ctx context.Context, arg UpdateScheduleRunMsgIDParams) error {
+	_, err := q.db.Exec(ctx, updateScheduleRunMsgID, arg.MsgID, arg.ID)
+	return err
+}
+
 const upsertSchedulerSettings = `-- name: UpsertSchedulerSettings :one
 insert into scheduler_settings (id, settings) values (true, $1)
 on conflict (id) do update set settings = excluded.settings, updated_at = now()

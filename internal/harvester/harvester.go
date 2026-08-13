@@ -83,7 +83,7 @@ func (h *Harvester) enqueueOne(ctx context.Context, topicID uuid.UUID) error {
 	epoch := time.Unix(0, 0).UTC()
 	return pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
 		qtx := h.q.WithTx(tx)
-		_, err := qtx.RecordScheduleRun(ctx, dbgen.RecordScheduleRunParams{
+		runID, err := qtx.RecordScheduleRun(ctx, dbgen.RecordScheduleRunParams{
 			ScheduleKey: "topic_evaluate:" + topicID.String(),
 			PlannedAt:   pgtype.Timestamptz{Time: epoch, Valid: true},
 			Queue:       string(queue.TopicEvaluate),
@@ -94,10 +94,16 @@ func (h *Harvester) enqueueOne(ctx context.Context, topicID uuid.UUID) error {
 		if err != nil {
 			return err
 		}
-		_, err = queue.Send(ctx, tx, queue.TopicEvaluate, map[string]string{
+		msgID, err := queue.Send(ctx, tx, queue.TopicEvaluate, map[string]string{
 			"topicId": topicID.String(),
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		return qtx.UpdateScheduleRunMsgID(ctx, dbgen.UpdateScheduleRunMsgIDParams{
+			MsgID: pgtype.Int8{Int64: msgID, Valid: true},
+			ID:    runID,
+		})
 	})
 }
 
