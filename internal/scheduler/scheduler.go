@@ -43,6 +43,8 @@ type Settings struct {
 	} `json:"topicEvaluate"`
 }
 
+const scheduledScoutMaxItems = 5
+
 // DefaultSettings 仅用于首次 seed（SPEC-008 §3.2）。
 func DefaultSettings() Settings {
 	var s Settings
@@ -243,7 +245,7 @@ func (s *Scheduler) tickTopicScout(ctx context.Context, settings Settings) {
 			s.log.Info("topic_scout skipped", "note", note)
 			return nil // 留痕但不入队
 		}
-		msgID, err := queue.Send(ctx, tx, queue.TopicScout, map[string]any{})
+		msgID, err := queue.Send(ctx, tx, queue.TopicScout, scheduledScoutPayload())
 		if err != nil {
 			return err
 		}
@@ -253,6 +255,10 @@ func (s *Scheduler) tickTopicScout(ctx context.Context, settings Settings) {
 	if err != nil {
 		s.log.Error("enqueue topic_scout failed", "error", err)
 	}
+}
+
+func scheduledScoutPayload() map[string]any {
+	return map[string]any{"maxItems": scheduledScoutMaxItems}
 }
 
 func setScheduleRunMsg(ctx context.Context, tx pgx.Tx, runID uuid.UUID, msgID int64) error {
