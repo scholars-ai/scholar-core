@@ -45,7 +45,9 @@ delete from sources where id = $1;
 select s.id, s.name, s.fetch_config
 from sources s
 left join source_health h on h.source_id = s.id
-where s.enabled and (h.next_run_at is null or h.next_run_at <= now());
+where s.enabled
+  and s.type <> 'manual'
+  and (h.next_run_at is null or h.next_run_at <= now());
 
 -- name: MarkSourceScheduled :exec
 -- 投递后立刻写 next_run_at，防同一窗口重复投递（与入队同事务）。

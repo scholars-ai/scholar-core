@@ -70,7 +70,9 @@ const dueSources = `-- name: DueSources :many
 select s.id, s.name, s.fetch_config
 from sources s
 left join source_health h on h.source_id = s.id
-where s.enabled and (h.next_run_at is null or h.next_run_at <= now())
+where s.enabled
+  and s.type <> 'manual'
+  and (h.next_run_at is null or h.next_run_at <= now())
 `
 
 type DueSourcesRow struct {
