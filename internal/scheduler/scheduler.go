@@ -38,9 +38,8 @@ type Settings struct {
 		MinNewItems int      `json:"minNewItems"`
 	} `json:"topicScout"`
 	TopicEvaluate struct {
-		Enabled          bool   `json:"enabled"`
-		MaxConcurrency   int    `json:"maxConcurrency"`
-		DailyTokenBudget *int64 `json:"dailyTokenBudget"`
+		Enabled        bool `json:"enabled"`
+		MaxConcurrency int  `json:"maxConcurrency"`
 	} `json:"topicEvaluate"`
 }
 
@@ -55,8 +54,6 @@ func DefaultSettings() Settings {
 	s.TopicScout.MinNewItems = 5
 	s.TopicEvaluate.Enabled = true
 	s.TopicEvaluate.MaxConcurrency = 2
-	budget := int64(200_000)
-	s.TopicEvaluate.DailyTokenBudget = &budget
 	return s
 }
 

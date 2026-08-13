@@ -649,6 +649,8 @@ type TopicEvaluation struct {
 	JudgeModel      string             `json:"judge_model"`
 	AgentRunID      uuid.NullUUID      `json:"agent_run_id"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	WeightVersion   pgtype.Int4        `json:"weight_version"`
+	VetoedDimension pgtype.Text        `json:"vetoed_dimension"`
 }
 
 type WeightSet struct {

@@ -93,18 +93,36 @@ func (q *Queries) LatestEvaluation(ctx context.Context, topicID uuid.UUID) (Late
 }
 
 const listTopicEvaluations = `-- name: ListTopicEvaluations :many
-select id, topic_id, rubric_version, dimension_scores, total_score, rationale, judge_model, agent_run_id, created_at from topic_evaluations where topic_id = $1 order by created_at desc
+select id, topic_id, rubric_version, dimension_scores, total_score, rationale,
+       judge_model, agent_run_id, weight_version, vetoed_dimension, created_at
+from topic_evaluations
+where topic_id = $1
+order by created_at desc
 `
 
-func (q *Queries) ListTopicEvaluations(ctx context.Context, topicID uuid.UUID) ([]TopicEvaluation, error) {
+type ListTopicEvaluationsRow struct {
+	ID              uuid.UUID          `json:"id"`
+	TopicID         uuid.UUID          `json:"topic_id"`
+	RubricVersion   string             `json:"rubric_version"`
+	DimensionScores []byte             `json:"dimension_scores"`
+	TotalScore      pgtype.Numeric     `json:"total_score"`
+	Rationale       string             `json:"rationale"`
+	JudgeModel      string             `json:"judge_model"`
+	AgentRunID      uuid.NullUUID      `json:"agent_run_id"`
+	WeightVersion   pgtype.Int4        `json:"weight_version"`
+	VetoedDimension pgtype.Text        `json:"vetoed_dimension"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) ListTopicEvaluations(ctx context.Context, topicID uuid.UUID) ([]ListTopicEvaluationsRow, error) {
 	rows, err := q.db.Query(ctx, listTopicEvaluations, topicID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []TopicEvaluation
+	var items []ListTopicEvaluationsRow
 	for rows.Next() {
-		var i TopicEvaluation
+		var i ListTopicEvaluationsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TopicID,
@@ -114,6 +132,8 @@ func (q *Queries) ListTopicEvaluations(ctx context.Context, topicID uuid.UUID) (
 			&i.Rationale,
 			&i.JudgeModel,
 			&i.AgentRunID,
+			&i.WeightVersion,
+			&i.VetoedDimension,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err

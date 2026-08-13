@@ -26,7 +26,11 @@ where id = $1 and status = sqlc.arg('from_status')
 returning *;
 
 -- name: ListTopicEvaluations :many
-select * from topic_evaluations where topic_id = $1 order by created_at desc;
+select id, topic_id, rubric_version, dimension_scores, total_score, rationale,
+       judge_model, agent_run_id, weight_version, vetoed_dimension, created_at
+from topic_evaluations
+where topic_id = $1
+order by created_at desc;
 
 -- name: CreateManualRawItem :one
 -- 手动投喂：先落一条占位 raw_item（内容抓取由 agents 的 source_fetch 完成后更新）

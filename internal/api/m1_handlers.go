@@ -328,12 +328,6 @@ func (h *Server) UpdateSchedulerSettings(w http.ResponseWriter, r *http.Request)
 	if patch.TopicEvaluate != nil {
 		current.TopicEvaluate.Enabled = patch.TopicEvaluate.Enabled
 		current.TopicEvaluate.MaxConcurrency = patch.TopicEvaluate.MaxConcurrency
-		if patch.TopicEvaluate.DailyTokenBudget != nil {
-			v := int64(*patch.TopicEvaluate.DailyTokenBudget)
-			current.TopicEvaluate.DailyTokenBudget = &v
-		} else {
-			current.TopicEvaluate.DailyTokenBudget = nil
-		}
 	}
 	if err := validateSettings(current); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_settings", err.Error())
@@ -379,9 +373,6 @@ func validateSettings(s scheduler.Settings) error {
 	}
 	if s.TopicEvaluate.MaxConcurrency < 1 || s.TopicEvaluate.MaxConcurrency > 32 {
 		return errors.New("topicEvaluate.maxConcurrency must be 1..32")
-	}
-	if b := s.TopicEvaluate.DailyTokenBudget; b != nil && *b < 0 {
-		return errors.New("topicEvaluate.dailyTokenBudget must be >= 0 or null")
 	}
 	return nil
 }
@@ -453,7 +444,7 @@ func readAll(r *http.Request) ([]byte, error) {
 
 // ---- API 类型转换 ----
 
-func toAPIEvaluation(e *dbgen.TopicEvaluation) TopicEvaluation {
+func toAPIEvaluation(e *dbgen.ListTopicEvaluationsRow) TopicEvaluation {
 	var scores map[string]float32
 	_ = json.Unmarshal(e.DimensionScores, &scores)
 	total, _ := e.TotalScore.Float64Value()
@@ -470,6 +461,14 @@ func toAPIEvaluation(e *dbgen.TopicEvaluation) TopicEvaluation {
 	if e.AgentRunID.Valid {
 		id := e.AgentRunID.UUID
 		out.AgentRunId = &id
+	}
+	if e.WeightVersion.Valid {
+		version := int(e.WeightVersion.Int32)
+		out.WeightVersion = &version
+	}
+	if e.VetoedDimension.Valid {
+		vetoed := e.VetoedDimension.String
+		out.VetoedDimension = &vetoed
 	}
 	return out
 }
