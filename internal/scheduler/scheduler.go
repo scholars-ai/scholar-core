@@ -43,7 +43,7 @@ type Settings struct {
 	} `json:"topicEvaluate"`
 }
 
-const scheduledScoutMaxItems = 5
+const scheduledScoutMaxItems = 20
 
 // DefaultSettings 仅用于首次 seed（SPEC-008 §3.2）。
 func DefaultSettings() Settings {
