@@ -55,6 +55,43 @@ const (
 	HealthStatusOk HealthStatus = "ok"
 )
 
+// Defines values for InsightKind.
+const (
+	PlatformLesson InsightKind = "platform_lesson"
+	SourceLesson   InsightKind = "source_lesson"
+	TopicLesson    InsightKind = "topic_lesson"
+	WritingLesson  InsightKind = "writing_lesson"
+)
+
+// Defines values for InsightStatus.
+const (
+	InsightStatusActive    InsightStatus = "active"
+	InsightStatusCandidate InsightStatus = "candidate"
+	InsightStatusRetired   InsightStatus = "retired"
+)
+
+// Defines values for MetricSource.
+const (
+	MetricSourceApi    MetricSource = "api"
+	MetricSourceImport MetricSource = "import"
+	MetricSourceManual MetricSource = "manual"
+)
+
+// Defines values for MetricWindow.
+const (
+	Custom MetricWindow = "custom"
+	D7     MetricWindow = "d7"
+	H24    MetricWindow = "h24"
+	H72    MetricWindow = "h72"
+)
+
+// Defines values for PerformanceCaseBand.
+const (
+	High   PerformanceCaseBand = "high"
+	Low    PerformanceCaseBand = "low"
+	Normal PerformanceCaseBand = "normal"
+)
+
 // Defines values for Platform.
 const (
 	Wechat      Platform = "wechat"
@@ -78,10 +115,10 @@ const (
 
 // Defines values for SourceType.
 const (
-	Crawler SourceType = "crawler"
-	Manual  SourceType = "manual"
-	Rss     SourceType = "rss"
-	Rsshub  SourceType = "rsshub"
+	SourceTypeCrawler SourceType = "crawler"
+	SourceTypeManual  SourceType = "manual"
+	SourceTypeRss     SourceType = "rss"
+	SourceTypeRsshub  SourceType = "rsshub"
 )
 
 // Defines values for TopicStatus.
@@ -92,6 +129,12 @@ const (
 	TopicStatusRejected  TopicStatus = "rejected"
 	TopicStatusScored    TopicStatus = "scored"
 	TopicStatusWritten   TopicStatus = "written"
+)
+
+// Defines values for UpdateInsightRequestStatus.
+const (
+	UpdateInsightRequestStatusActive  UpdateInsightRequestStatus = "active"
+	UpdateInsightRequestStatusRetired UpdateInsightRequestStatus = "retired"
 )
 
 // Article defines model for Article.
@@ -159,6 +202,28 @@ type ArticleReview struct {
 // ArticleStatus defines model for ArticleStatus.
 type ArticleStatus string
 
+// CalibrationReport defines model for CalibrationReport.
+type CalibrationReport struct {
+	ColdStart    bool                `json:"coldStart"`
+	Correlations []CorrelationResult `json:"correlations"`
+	HighCases    []PerformanceCase   `json:"highCases"`
+	LowCases     []PerformanceCase   `json:"lowCases"`
+}
+
+// CorrelationResult defines model for CorrelationResult.
+type CorrelationResult struct {
+	Coefficient *float32 `json:"coefficient"`
+	Key         string   `json:"key"`
+	SampleSize  int      `json:"sampleSize"`
+}
+
+// CreateMetricSnapshotRequest defines model for CreateMetricSnapshotRequest.
+type CreateMetricSnapshotRequest struct {
+	CapturedAt     time.Time         `json:"capturedAt"`
+	Metrics        EngagementMetrics `json:"metrics"`
+	SnapshotWindow MetricWindow      `json:"snapshotWindow"`
+}
+
 // CreatePublicationRequest defines model for CreatePublicationRequest.
 type CreatePublicationRequest struct {
 	FinalContentMd         string `json:"finalContentMd"`
@@ -178,6 +243,16 @@ type CreateTopicRequest struct {
 	Summary         string     `json:"summary"`
 	TargetPlatforms []Platform `json:"targetPlatforms"`
 	Title           string     `json:"title"`
+}
+
+// EngagementMetrics defines model for EngagementMetrics.
+type EngagementMetrics struct {
+	Comments  *int `json:"comments"`
+	Favorites *int `json:"favorites"`
+	Follows   *int `json:"follows"`
+	Likes     *int `json:"likes"`
+	Shares    *int `json:"shares"`
+	Views     *int `json:"views"`
 }
 
 // Error defines model for Error.
@@ -201,6 +276,17 @@ type HealthDb string
 // HealthStatus defines model for Health.Status.
 type HealthStatus string
 
+// ImportMetricSnapshotsRequest defines model for ImportMetricSnapshotsRequest.
+type ImportMetricSnapshotsRequest struct {
+	Items []MetricSnapshotImportItem `json:"items"`
+}
+
+// ImportMetricSnapshotsResult defines model for ImportMetricSnapshotsResult.
+type ImportMetricSnapshotsResult struct {
+	Imported  int              `json:"imported"`
+	Snapshots []MetricSnapshot `json:"snapshots"`
+}
+
 // IngestUrlRequest defines model for IngestUrlRequest.
 type IngestUrlRequest struct {
 	// Note 备注（为什么觉得这条值得写）
@@ -208,14 +294,119 @@ type IngestUrlRequest struct {
 	Url  string  `json:"url"`
 }
 
+// Insight defines model for Insight.
+type Insight struct {
+	Confidence float32            `json:"confidence"`
+	Content    string             `json:"content"`
+	CreatedAt  time.Time          `json:"createdAt"`
+	Evidence   []InsightEvidence  `json:"evidence"`
+	Id         openapi_types.UUID `json:"id"`
+	Kind       InsightKind        `json:"kind"`
+	Platform   *Platform          `json:"platform"`
+	Status     InsightStatus      `json:"status"`
+	UpdatedAt  time.Time          `json:"updatedAt"`
+}
+
+// InsightEvidence defines model for InsightEvidence.
+type InsightEvidence struct {
+	ArticleIds     []openapi_types.UUID `json:"articleIds"`
+	Note           string               `json:"note"`
+	PublicationIds []openapi_types.UUID `json:"publicationIds"`
+}
+
+// InsightKind defines model for InsightKind.
+type InsightKind string
+
+// InsightStatus defines model for InsightStatus.
+type InsightStatus string
+
 // JobAccepted defines model for JobAccepted.
 type JobAccepted struct {
 	MsgId int64  `json:"msgId"`
 	Queue string `json:"queue"`
 }
 
+// MemoryReflectSchedule defines model for MemoryReflectSchedule.
+type MemoryReflectSchedule struct {
+	Enabled      bool   `json:"enabled"`
+	LookbackDays int    `json:"lookbackDays"`
+	Time         string `json:"time"`
+	Timezone     string `json:"timezone"`
+	Weekday      int    `json:"weekday"`
+}
+
+// MetricReminder defines model for MetricReminder.
+type MetricReminder struct {
+	DueAt          time.Time    `json:"dueAt"`
+	Overdue        bool         `json:"overdue"`
+	SnapshotWindow MetricWindow `json:"snapshotWindow"`
+}
+
+// MetricSnapshot defines model for MetricSnapshot.
+type MetricSnapshot struct {
+	CapturedAt               time.Time          `json:"capturedAt"`
+	CreatedAt                time.Time          `json:"createdAt"`
+	Id                       openapi_types.UUID `json:"id"`
+	Metrics                  EngagementMetrics  `json:"metrics"`
+	PerformancePercentile    *float32           `json:"performancePercentile"`
+	PerformanceRaw           float32            `json:"performanceRaw"`
+	PerformanceWeightVersion int                `json:"performanceWeightVersion"`
+	PublicationId            openapi_types.UUID `json:"publicationId"`
+	SnapshotWindow           MetricWindow       `json:"snapshotWindow"`
+	Source                   MetricSource       `json:"source"`
+}
+
+// MetricSnapshotImportItem defines model for MetricSnapshotImportItem.
+type MetricSnapshotImportItem struct {
+	CapturedAt     time.Time          `json:"capturedAt"`
+	Metrics        EngagementMetrics  `json:"metrics"`
+	PublicationId  openapi_types.UUID `json:"publicationId"`
+	SnapshotWindow MetricWindow       `json:"snapshotWindow"`
+}
+
+// MetricSource defines model for MetricSource.
+type MetricSource string
+
+// MetricWindow defines model for MetricWindow.
+type MetricWindow string
+
+// PerformanceCase defines model for PerformanceCase.
+type PerformanceCase struct {
+	ArticleId      openapi_types.UUID  `json:"articleId"`
+	Band           PerformanceCaseBand `json:"band"`
+	CapturedAt     time.Time           `json:"capturedAt"`
+	Percentile     float32             `json:"percentile"`
+	PerformanceRaw float32             `json:"performanceRaw"`
+	Platform       Platform            `json:"platform"`
+	PublicationId  openapi_types.UUID  `json:"publicationId"`
+	SnapshotWindow MetricWindow        `json:"snapshotWindow"`
+	Title          string              `json:"title"`
+}
+
+// PerformanceCaseBand defines model for PerformanceCase.Band.
+type PerformanceCaseBand string
+
+// PerformanceDashboard defines model for PerformanceDashboard.
+type PerformanceDashboard struct {
+	Cases     []PerformanceCase            `json:"cases"`
+	Days      int                          `json:"days"`
+	Summaries []PlatformPerformanceSummary `json:"summaries"`
+}
+
 // Platform defines model for Platform.
 type Platform string
+
+// PlatformPerformanceSummary defines model for PlatformPerformanceSummary.
+type PlatformPerformanceSummary struct {
+	Complete24h  int      `json:"complete24h"`
+	Complete72h  int      `json:"complete72h"`
+	Complete7d   int      `json:"complete7d"`
+	HighCount    int      `json:"highCount"`
+	LowCount     int      `json:"lowCount"`
+	Platform     Platform `json:"platform"`
+	Publications int      `json:"publications"`
+	Snapshots    int      `json:"snapshots"`
+}
 
 // Publication defines model for Publication.
 type Publication struct {
@@ -228,6 +419,22 @@ type Publication struct {
 	Platform               Platform           `json:"platform"`
 	PlatformPostId         *string            `json:"platformPostId"`
 	PublishedAt            time.Time          `json:"publishedAt"`
+}
+
+// PublicationPerformance defines model for PublicationPerformance.
+type PublicationPerformance struct {
+	ArticleTitle string           `json:"articleTitle"`
+	Publication  Publication      `json:"publication"`
+	Reminders    []MetricReminder `json:"reminders"`
+	Snapshots    []MetricSnapshot `json:"snapshots"`
+	TopicTitle   string           `json:"topicTitle"`
+}
+
+// PublicationPerformanceList defines model for PublicationPerformanceList.
+type PublicationPerformanceList struct {
+	Items        []PublicationPerformance `json:"items"`
+	OverdueCount int                      `json:"overdueCount"`
+	Total        int                      `json:"total"`
 }
 
 // RejectArticleRequest defines model for RejectArticleRequest.
@@ -244,6 +451,7 @@ type RejectTopicRequest struct {
 
 // SchedulerSettings defines model for SchedulerSettings.
 type SchedulerSettings struct {
+	MemoryReflect MemoryReflectSchedule `json:"memoryReflect"`
 	SourceFetch   SourceFetchSchedule   `json:"sourceFetch"`
 	TopicEvaluate TopicEvaluateSchedule `json:"topicEvaluate"`
 	TopicScout    TopicScoutSchedule    `json:"topicScout"`
@@ -251,6 +459,7 @@ type SchedulerSettings struct {
 
 // SchedulerSettingsPatch 仅传需要改的分组
 type SchedulerSettingsPatch struct {
+	MemoryReflect *MemoryReflectSchedule `json:"memoryReflect,omitempty"`
 	SourceFetch   *SourceFetchSchedule   `json:"sourceFetch,omitempty"`
 	TopicEvaluate *TopicEvaluateSchedule `json:"topicEvaluate,omitempty"`
 	TopicScout    *TopicScoutSchedule    `json:"topicScout,omitempty"`
@@ -399,8 +608,40 @@ type TopicScoutSchedule struct {
 // TopicStatus defines model for TopicStatus.
 type TopicStatus string
 
+// TriggerMemoryReflectRequest defines model for TriggerMemoryReflectRequest.
+type TriggerMemoryReflectRequest struct {
+	PeriodEnd   *time.Time `json:"periodEnd,omitempty"`
+	PeriodStart *time.Time `json:"periodStart,omitempty"`
+}
+
+// UpdateInsightRequest defines model for UpdateInsightRequest.
+type UpdateInsightRequest struct {
+	Status UpdateInsightRequestStatus `json:"status"`
+}
+
+// UpdateInsightRequestStatus defines model for UpdateInsightRequest.Status.
+type UpdateInsightRequestStatus string
+
+// WeeklyReport defines model for WeeklyReport.
+type WeeklyReport struct {
+	AgentRunId      *openapi_types.UUID `json:"agentRunId"`
+	Calibration     CalibrationReport   `json:"calibration"`
+	CreatedAt       time.Time           `json:"createdAt"`
+	Id              openapi_types.UUID  `json:"id"`
+	PeriodEnd       time.Time           `json:"periodEnd"`
+	PeriodStart     time.Time           `json:"periodStart"`
+	SampleCount     int                 `json:"sampleCount"`
+	SummaryMarkdown string              `json:"summaryMarkdown"`
+}
+
 // ArticleId defines model for ArticleId.
 type ArticleId = openapi_types.UUID
+
+// InsightId defines model for InsightId.
+type InsightId = openapi_types.UUID
+
+// PublicationId defines model for PublicationId.
+type PublicationId = openapi_types.UUID
 
 // SourceId defines model for SourceId.
 type SourceId = openapi_types.UUID
@@ -426,6 +667,33 @@ type ListArticlesParams struct {
 	Offset   *int                `form:"offset,omitempty" json:"offset,omitempty"`
 }
 
+// ListInsightsParams defines parameters for ListInsights.
+type ListInsightsParams struct {
+	Kind     *InsightKind   `form:"kind,omitempty" json:"kind,omitempty"`
+	Status   *InsightStatus `form:"status,omitempty" json:"status,omitempty"`
+	Platform *Platform      `form:"platform,omitempty" json:"platform,omitempty"`
+	Limit    *int           `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// GetPerformanceDashboardParams defines parameters for GetPerformanceDashboard.
+type GetPerformanceDashboardParams struct {
+	Platform *Platform `form:"platform,omitempty" json:"platform,omitempty"`
+	Days     *int      `form:"days,omitempty" json:"days,omitempty"`
+}
+
+// ListPublicationsParams defines parameters for ListPublications.
+type ListPublicationsParams struct {
+	Platform      *Platform `form:"platform,omitempty" json:"platform,omitempty"`
+	RemindersOnly *bool     `form:"remindersOnly,omitempty" json:"remindersOnly,omitempty"`
+	Limit         *int      `form:"limit,omitempty" json:"limit,omitempty"`
+	Offset        *int      `form:"offset,omitempty" json:"offset,omitempty"`
+}
+
+// ListWeeklyReportsParams defines parameters for ListWeeklyReports.
+type ListWeeklyReportsParams struct {
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
 // ListSourcesParams defines parameters for ListSources.
 type ListSourcesParams struct {
 	Enabled *bool `form:"enabled,omitempty" json:"enabled,omitempty"`
@@ -446,6 +714,18 @@ type RejectArticleJSONRequestBody = RejectArticleRequest
 
 // IngestUrlJSONRequestBody defines body for IngestUrl for application/json ContentType.
 type IngestUrlJSONRequestBody = IngestUrlRequest
+
+// UpdateInsightJSONRequestBody defines body for UpdateInsight for application/json ContentType.
+type UpdateInsightJSONRequestBody = UpdateInsightRequest
+
+// ImportMetricSnapshotsJSONRequestBody defines body for ImportMetricSnapshots for application/json ContentType.
+type ImportMetricSnapshotsJSONRequestBody = ImportMetricSnapshotsRequest
+
+// CreateMetricSnapshotJSONRequestBody defines body for CreateMetricSnapshot for application/json ContentType.
+type CreateMetricSnapshotJSONRequestBody = CreateMetricSnapshotRequest
+
+// TriggerMemoryReflectJSONRequestBody defines body for TriggerMemoryReflect for application/json ContentType.
+type TriggerMemoryReflectJSONRequestBody = TriggerMemoryReflectRequest
 
 // UpdateSchedulerSettingsJSONRequestBody defines body for UpdateSchedulerSettings for application/json ContentType.
 type UpdateSchedulerSettingsJSONRequestBody = SchedulerSettingsPatch
@@ -488,6 +768,33 @@ type ServerInterface interface {
 	// 手动投喂 URL（刷到好东西时的一键入口，SPEC-003 §2.2）
 	// (POST /v1/ingest/url)
 	IngestUrl(w http.ResponseWriter, r *http.Request)
+	// Reflector 经验库
+	// (GET /v1/insights)
+	ListInsights(w http.ResponseWriter, r *http.Request, params ListInsightsParams)
+	// 人工启用或退役一条经验
+	// (PATCH /v1/insights/{insightId})
+	UpdateInsight(w http.ResponseWriter, r *http.Request, insightId InsightId)
+	// 原子批量导入 Client 已解析和预检查的 CSV 指标
+	// (POST /v1/metrics/import)
+	ImportMetricSnapshots(w http.ResponseWriter, r *http.Request)
+	// 平台内表现分分布、快照覆盖和近期 high/low case
+	// (GET /v1/performance/dashboard)
+	GetPerformanceDashboard(w http.ResponseWriter, r *http.Request, params GetPerformanceDashboardParams)
+	// 发布记录、标准快照完成度与待录提醒
+	// (GET /v1/publications)
+	ListPublications(w http.ResponseWriter, r *http.Request, params ListPublicationsParams)
+	// 一次发布的全部累计指标快照
+	// (GET /v1/publications/{publicationId}/metrics)
+	ListMetricSnapshots(w http.ResponseWriter, r *http.Request, publicationId PublicationId)
+	// 录入一条 24h/72h/7d 或自定义累计指标快照
+	// (POST /v1/publications/{publicationId}/metrics)
+	CreateMetricSnapshot(w http.ResponseWriter, r *http.Request, publicationId PublicationId)
+	// 手动触发指定周期或最近七天的反思
+	// (POST /v1/reflections/run)
+	TriggerMemoryReflect(w http.ResponseWriter, r *http.Request)
+	// 周度归因与评分校准报告
+	// (GET /v1/reports/weekly)
+	ListWeeklyReports(w http.ResponseWriter, r *http.Request, params ListWeeklyReportsParams)
 	// 立即跑一次选题聚合（不等调度；忽略 minNewItems）
 	// (POST /v1/scout/run)
 	TriggerTopicScout(w http.ResponseWriter, r *http.Request)
@@ -584,6 +891,60 @@ func (_ Unimplemented) RejectArticle(w http.ResponseWriter, r *http.Request, art
 // 手动投喂 URL（刷到好东西时的一键入口，SPEC-003 §2.2）
 // (POST /v1/ingest/url)
 func (_ Unimplemented) IngestUrl(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Reflector 经验库
+// (GET /v1/insights)
+func (_ Unimplemented) ListInsights(w http.ResponseWriter, r *http.Request, params ListInsightsParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 人工启用或退役一条经验
+// (PATCH /v1/insights/{insightId})
+func (_ Unimplemented) UpdateInsight(w http.ResponseWriter, r *http.Request, insightId InsightId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 原子批量导入 Client 已解析和预检查的 CSV 指标
+// (POST /v1/metrics/import)
+func (_ Unimplemented) ImportMetricSnapshots(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 平台内表现分分布、快照覆盖和近期 high/low case
+// (GET /v1/performance/dashboard)
+func (_ Unimplemented) GetPerformanceDashboard(w http.ResponseWriter, r *http.Request, params GetPerformanceDashboardParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 发布记录、标准快照完成度与待录提醒
+// (GET /v1/publications)
+func (_ Unimplemented) ListPublications(w http.ResponseWriter, r *http.Request, params ListPublicationsParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 一次发布的全部累计指标快照
+// (GET /v1/publications/{publicationId}/metrics)
+func (_ Unimplemented) ListMetricSnapshots(w http.ResponseWriter, r *http.Request, publicationId PublicationId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 录入一条 24h/72h/7d 或自定义累计指标快照
+// (POST /v1/publications/{publicationId}/metrics)
+func (_ Unimplemented) CreateMetricSnapshot(w http.ResponseWriter, r *http.Request, publicationId PublicationId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 手动触发指定周期或最近七天的反思
+// (POST /v1/reflections/run)
+func (_ Unimplemented) TriggerMemoryReflect(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 周度归因与评分校准报告
+// (GET /v1/reports/weekly)
+func (_ Unimplemented) ListWeeklyReports(w http.ResponseWriter, r *http.Request, params ListWeeklyReportsParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -889,6 +1250,273 @@ func (siw *ServerInterfaceWrapper) IngestUrl(w http.ResponseWriter, r *http.Requ
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.IngestUrl(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListInsights operation middleware
+func (siw *ServerInterfaceWrapper) ListInsights(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListInsightsParams
+
+	// ------------- Optional query parameter "kind" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "kind", r.URL.Query(), &params.Kind)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "kind", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "status" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "status", r.URL.Query(), &params.Status)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "status", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "platform" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "platform", r.URL.Query(), &params.Platform)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "platform", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "limit", r.URL.Query(), &params.Limit)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListInsights(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateInsight operation middleware
+func (siw *ServerInterfaceWrapper) UpdateInsight(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "insightId" -------------
+	var insightId InsightId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "insightId", chi.URLParam(r, "insightId"), &insightId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "insightId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateInsight(w, r, insightId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ImportMetricSnapshots operation middleware
+func (siw *ServerInterfaceWrapper) ImportMetricSnapshots(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ImportMetricSnapshots(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetPerformanceDashboard operation middleware
+func (siw *ServerInterfaceWrapper) GetPerformanceDashboard(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetPerformanceDashboardParams
+
+	// ------------- Optional query parameter "platform" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "platform", r.URL.Query(), &params.Platform)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "platform", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "days" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "days", r.URL.Query(), &params.Days)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "days", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetPerformanceDashboard(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListPublications operation middleware
+func (siw *ServerInterfaceWrapper) ListPublications(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListPublicationsParams
+
+	// ------------- Optional query parameter "platform" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "platform", r.URL.Query(), &params.Platform)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "platform", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "remindersOnly" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "remindersOnly", r.URL.Query(), &params.RemindersOnly)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "remindersOnly", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "limit", r.URL.Query(), &params.Limit)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "offset" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "offset", r.URL.Query(), &params.Offset)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "offset", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListPublications(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListMetricSnapshots operation middleware
+func (siw *ServerInterfaceWrapper) ListMetricSnapshots(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "publicationId" -------------
+	var publicationId PublicationId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "publicationId", chi.URLParam(r, "publicationId"), &publicationId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "publicationId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListMetricSnapshots(w, r, publicationId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateMetricSnapshot operation middleware
+func (siw *ServerInterfaceWrapper) CreateMetricSnapshot(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "publicationId" -------------
+	var publicationId PublicationId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "publicationId", chi.URLParam(r, "publicationId"), &publicationId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "publicationId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateMetricSnapshot(w, r, publicationId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// TriggerMemoryReflect operation middleware
+func (siw *ServerInterfaceWrapper) TriggerMemoryReflect(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.TriggerMemoryReflect(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListWeeklyReports operation middleware
+func (siw *ServerInterfaceWrapper) ListWeeklyReports(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListWeeklyReportsParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "limit", r.URL.Query(), &params.Limit)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListWeeklyReports(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1376,6 +2004,33 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/v1/ingest/url", wrapper.IngestUrl)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/insights", wrapper.ListInsights)
+	})
+	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/v1/insights/{insightId}", wrapper.UpdateInsight)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/metrics/import", wrapper.ImportMetricSnapshots)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/performance/dashboard", wrapper.GetPerformanceDashboard)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/publications", wrapper.ListPublications)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/publications/{publicationId}/metrics", wrapper.ListMetricSnapshots)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/publications/{publicationId}/metrics", wrapper.CreateMetricSnapshot)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/reflections/run", wrapper.TriggerMemoryReflect)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/reports/weekly", wrapper.ListWeeklyReports)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/scout/run", wrapper.TriggerTopicScout)
 	})
 	r.Group(func(r chi.Router) {
@@ -1427,79 +2082,108 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 // Base64 encoded, gzipped, json marshaled Swagger object
 var swaggerSpec = []string{
 
-	"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",
-	"VU/oMJNi6aHeof8PAAD//+um7/7lVgAA",
+	"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",
 }
 
 // GetSwagger returns the content of the embedded swagger specification file

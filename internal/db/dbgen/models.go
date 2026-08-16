@@ -274,6 +274,50 @@ func (ns NullMetricSource) Value() (driver.Value, error) {
 	return string(ns.MetricSource), nil
 }
 
+type MetricWindow string
+
+const (
+	MetricWindowH24    MetricWindow = "h24"
+	MetricWindowH72    MetricWindow = "h72"
+	MetricWindowD7     MetricWindow = "d7"
+	MetricWindowCustom MetricWindow = "custom"
+)
+
+func (e *MetricWindow) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = MetricWindow(s)
+	case string:
+		*e = MetricWindow(s)
+	default:
+		return fmt.Errorf("unsupported scan type for MetricWindow: %T", src)
+	}
+	return nil
+}
+
+type NullMetricWindow struct {
+	MetricWindow MetricWindow `json:"metric_window"`
+	Valid        bool         `json:"valid"` // Valid is true if MetricWindow is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullMetricWindow) Scan(value interface{}) error {
+	if value == nil {
+		ns.MetricWindow, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.MetricWindow.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullMetricWindow) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.MetricWindow), nil
+}
+
 type Platform string
 
 const (
@@ -546,16 +590,17 @@ type ArticleEvaluation struct {
 }
 
 type Insight struct {
-	ID         uuid.UUID           `json:"id"`
-	Kind       InsightKind         `json:"kind"`
-	Platform   NullPlatform        `json:"platform"`
-	Content    string              `json:"content"`
-	Evidence   []byte              `json:"evidence"`
-	Confidence pgtype.Numeric      `json:"confidence"`
-	Status     InsightStatus       `json:"status"`
-	Embedding  *pgvector_go.Vector `json:"embedding"`
-	CreatedAt  pgtype.Timestamptz  `json:"created_at"`
-	UpdatedAt  pgtype.Timestamptz  `json:"updated_at"`
+	ID                   uuid.UUID           `json:"id"`
+	Kind                 InsightKind         `json:"kind"`
+	Platform             NullPlatform        `json:"platform"`
+	Content              string              `json:"content"`
+	Evidence             []byte              `json:"evidence"`
+	Confidence           pgtype.Numeric      `json:"confidence"`
+	Status               InsightStatus       `json:"status"`
+	Embedding            *pgvector_go.Vector `json:"embedding"`
+	CreatedAt            pgtype.Timestamptz  `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz  `json:"updated_at"`
+	ManualStatusOverride bool                `json:"manual_status_override"`
 }
 
 type JobFailure struct {
@@ -582,12 +627,24 @@ type JobReceipt struct {
 }
 
 type MetricSnapshot struct {
-	ID            uuid.UUID          `json:"id"`
-	PublicationID uuid.UUID          `json:"publication_id"`
-	CapturedAt    pgtype.Timestamptz `json:"captured_at"`
-	Metrics       []byte             `json:"metrics"`
-	Source        MetricSource       `json:"source"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	ID                       uuid.UUID          `json:"id"`
+	PublicationID            uuid.UUID          `json:"publication_id"`
+	CapturedAt               pgtype.Timestamptz `json:"captured_at"`
+	Metrics                  []byte             `json:"metrics"`
+	Source                   MetricSource       `json:"source"`
+	CreatedAt                pgtype.Timestamptz `json:"created_at"`
+	SnapshotWindow           MetricWindow       `json:"snapshot_window"`
+	PerformanceRaw           pgtype.Numeric     `json:"performance_raw"`
+	PerformancePercentile    pgtype.Numeric     `json:"performance_percentile"`
+	PerformanceWeightVersion int32              `json:"performance_weight_version"`
+}
+
+type PerformanceWeightSet struct {
+	Platform  Platform           `json:"platform"`
+	Version   int32              `json:"version"`
+	Weights   []byte             `json:"weights"`
+	Note      string             `json:"note"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type Publication struct {
@@ -718,6 +775,17 @@ type TopicEvaluation struct {
 	WeightVersion    pgtype.Int4        `json:"weight_version"`
 	VetoedDimension  pgtype.Text        `json:"vetoed_dimension"`
 	DimensionReasons []byte             `json:"dimension_reasons"`
+}
+
+type WeeklyReport struct {
+	ID              uuid.UUID          `json:"id"`
+	PeriodStart     pgtype.Timestamptz `json:"period_start"`
+	PeriodEnd       pgtype.Timestamptz `json:"period_end"`
+	SampleCount     int32              `json:"sample_count"`
+	SummaryMarkdown string             `json:"summary_markdown"`
+	Calibration     []byte             `json:"calibration"`
+	AgentRunID      uuid.NullUUID      `json:"agent_run_id"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
 type WeightSet struct {

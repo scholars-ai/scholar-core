@@ -43,6 +43,13 @@ type Settings struct {
 		Enabled        bool `json:"enabled"`
 		MaxConcurrency int  `json:"maxConcurrency"`
 	} `json:"topicEvaluate"`
+	MemoryReflect struct {
+		Enabled      bool   `json:"enabled"`
+		Weekday      int    `json:"weekday"`
+		Time         string `json:"time"`
+		Timezone     string `json:"timezone"`
+		LookbackDays int    `json:"lookbackDays"`
+	} `json:"memoryReflect"`
 }
 
 const scheduledScoutMaxItems = 20
@@ -58,6 +65,11 @@ func DefaultSettings() Settings {
 	s.TopicScout.MinNewItems = 5
 	s.TopicEvaluate.Enabled = true
 	s.TopicEvaluate.MaxConcurrency = 2
+	s.MemoryReflect.Enabled = true
+	s.MemoryReflect.Weekday = 1
+	s.MemoryReflect.Time = "09:00"
+	s.MemoryReflect.Timezone = "Asia/Shanghai"
+	s.MemoryReflect.LookbackDays = 7
 	return s
 }
 
@@ -125,6 +137,9 @@ func (s *Scheduler) Tick(ctx context.Context) (err error) {
 	if settings.TopicScout.Enabled {
 		s.tickTopicScout(ctx, settings)
 	}
+	if settings.MemoryReflect.Enabled {
+		s.tickMemoryReflect(ctx, settings)
+	}
 	return nil
 }
 
@@ -135,11 +150,52 @@ func (s *Scheduler) loadSettings(ctx context.Context) (Settings, error) {
 	if err != nil {
 		return Settings{}, err
 	}
-	var out Settings
+	out := DefaultSettings()
 	if err := json.Unmarshal(row.Settings, &out); err != nil {
 		return Settings{}, fmt.Errorf("corrupt scheduler_settings: %w", err)
 	}
 	return out, nil
+}
+
+func (s *Scheduler) tickMemoryReflect(ctx context.Context, settings Settings) {
+	loc, err := time.LoadLocation(settings.MemoryReflect.Timezone)
+	if err != nil {
+		s.log.Warn("bad memory reflect timezone, skipping", "tz", settings.MemoryReflect.Timezone)
+		return
+	}
+	local := s.now().In(loc)
+	isoWeekday := (int(local.Weekday())+6)%7 + 1
+	if isoWeekday != settings.MemoryReflect.Weekday || local.Format("15:04") != settings.MemoryReflect.Time {
+		return
+	}
+	periodEnd := local.Truncate(time.Minute).UTC()
+	periodStart := periodEnd.AddDate(0, 0, -settings.MemoryReflect.LookbackDays)
+	planned := periodEnd
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		qtx := s.q.WithTx(tx)
+		runID, err := qtx.RecordScheduleRun(ctx, dbgen.RecordScheduleRunParams{
+			ScheduleKey: "memory_reflect", PlannedAt: pgtype.Timestamptz{Time: planned, Valid: true},
+			Queue: string(queue.MemoryReflect),
+		})
+		if isNoRows(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		msgID, err := queue.Send(ctx, tx, queue.MemoryReflect, map[string]string{
+			"periodStart": periodStart.Format(time.RFC3339),
+			"periodEnd":   periodEnd.Format(time.RFC3339),
+		}, queue.WithTrigger("scheduler"))
+		if err != nil {
+			return err
+		}
+		s.log.Info("memory_reflect enqueued", "msg_id", msgID, "period_start", periodStart, "period_end", periodEnd)
+		return setScheduleRunMsg(ctx, tx, runID, msgID)
+	})
+	if err != nil {
+		s.log.Error("enqueue memory_reflect failed", "error", err)
+	}
 }
 
 // tickSourceFetch：到期的源投递 source_fetch。

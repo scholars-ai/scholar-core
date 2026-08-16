@@ -361,6 +361,13 @@ func (h *Server) UpdateSchedulerSettings(w http.ResponseWriter, r *http.Request)
 		current.TopicEvaluate.Enabled = patch.TopicEvaluate.Enabled
 		current.TopicEvaluate.MaxConcurrency = patch.TopicEvaluate.MaxConcurrency
 	}
+	if patch.MemoryReflect != nil {
+		current.MemoryReflect.Enabled = patch.MemoryReflect.Enabled
+		current.MemoryReflect.Weekday = patch.MemoryReflect.Weekday
+		current.MemoryReflect.Time = patch.MemoryReflect.Time
+		current.MemoryReflect.Timezone = patch.MemoryReflect.Timezone
+		current.MemoryReflect.LookbackDays = patch.MemoryReflect.LookbackDays
+	}
 	if err := validateSettings(current); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_settings", err.Error())
 		return
@@ -406,6 +413,19 @@ func validateSettings(s scheduler.Settings) error {
 	if s.TopicEvaluate.MaxConcurrency < 1 || s.TopicEvaluate.MaxConcurrency > 32 {
 		return errors.New("topicEvaluate.maxConcurrency must be 1..32")
 	}
+	if s.MemoryReflect.Weekday < 1 || s.MemoryReflect.Weekday > 7 {
+		return errors.New("memoryReflect.weekday must be 1..7")
+	}
+	var hh, mm int
+	if _, err := fmt.Sscanf(s.MemoryReflect.Time, "%02d:%02d", &hh, &mm); err != nil || hh > 23 || mm > 59 || len(s.MemoryReflect.Time) != 5 {
+		return fmt.Errorf("bad memoryReflect.time %q (want HH:MM)", s.MemoryReflect.Time)
+	}
+	if _, err := time.LoadLocation(s.MemoryReflect.Timezone); err != nil {
+		return fmt.Errorf("unknown memoryReflect timezone %q", s.MemoryReflect.Timezone)
+	}
+	if s.MemoryReflect.LookbackDays < 1 || s.MemoryReflect.LookbackDays > 90 {
+		return errors.New("memoryReflect.lookbackDays must be 1..90")
+	}
 	return nil
 }
 
@@ -422,7 +442,7 @@ func (h *Server) sendJob(ctx context.Context, q queue.Name, payload any) (int64,
 }
 
 func validateSourceURL(t SourceType, u *string) error {
-	if t == Manual {
+	if t == SourceTypeManual {
 		return nil // manual 源无需 URL
 	}
 	if u == nil || *u == "" {
