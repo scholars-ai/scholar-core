@@ -1,0 +1,20 @@
+name: Cross-repository E2E
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pipeline:
+    uses: scholars-ai/scholar-infra/.github/workflows/reusable-e2e.yml@main
+    with:
+      infra_repository: scholars-ai/scholar-infra
+      infra_ref: main
+      core_repository: ${{ github.event.pull_request.head.repo.full_name }}
+      core_ref: ${{ github.event.pull_request.head.sha }}
+      agents_repository: scholars-ai/scholar-agents
+      agents_ref: main
+      shared_repository: scholars-ai/scholar-shared
+      shared_ref: main
