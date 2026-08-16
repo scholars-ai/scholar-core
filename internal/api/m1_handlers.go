@@ -11,22 +11,30 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/scholars-ai/scholar-core/internal/db/dbgen"
 	"github.com/scholars-ai/scholar-core/internal/pipeline"
 	"github.com/scholars-ai/scholar-core/internal/queue"
 	"github.com/scholars-ai/scholar-core/internal/scheduler"
+	"github.com/scholars-ai/scholar-core/internal/telemetry"
 )
 
 // ---- topics: approve / reject / evaluations ----
 
 func (h *Server) ApproveTopic(w http.ResponseWriter, r *http.Request, topicId TopicId) {
-	h.transition(w, r, topicId, dbgen.TopicStatusScored, dbgen.TopicStatusApproved)
+	h.transition(w, r, topicId, dbgen.TopicStatusScored, dbgen.TopicStatusApproved, "manual approval")
 }
 
 func (h *Server) RejectTopic(w http.ResponseWriter, r *http.Request, topicId TopicId) {
+	var req RejectTopicRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req)
+	}
 	// candidate 和 scored 都允许人工否决（SPEC-002 §3）
 	topic, err := h.q.GetTopic(r.Context(), topicId)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -37,20 +45,36 @@ func (h *Server) RejectTopic(w http.ResponseWriter, r *http.Request, topicId Top
 		h.internalError(w, "get topic", err)
 		return
 	}
-	h.transition(w, r, topicId, topic.Status, dbgen.TopicStatusRejected)
+	reason := "manual rejection"
+	if req.Reason != nil && strings.TrimSpace(*req.Reason) != "" {
+		reason = strings.TrimSpace(*req.Reason)
+	}
+	h.transition(w, r, topicId, topic.Status, dbgen.TopicStatusRejected, reason)
 }
 
 // transition 执行一次状态机流转；非法流转返回 409（状态机是唯一裁判）。
-func (h *Server) transition(w http.ResponseWriter, r *http.Request, id TopicId, from, to dbgen.TopicStatus) {
+func (h *Server) transition(w http.ResponseWriter, r *http.Request, id TopicId, from, to dbgen.TopicStatus, reason string) {
 	if !pipeline.CanTopicTransition(from, to) {
 		writeError(w, http.StatusConflict, "invalid_transition",
 			fmt.Sprintf("cannot transition topic from %q to %q", from, to))
 		return
 	}
-	topic, err := h.q.TransitionTopic(r.Context(), dbgen.TransitionTopicParams{
-		ID: id, FromStatus: from, ToStatus: to,
+	ctx, span := otel.Tracer("scholar-core/pipeline").Start(r.Context(), "pipeline.transition_topic")
+	span.SetAttributes(
+		attribute.String(telemetry.AttrTopicID, id.String()),
+		attribute.String(telemetry.AttrFromStatus, string(from)),
+		attribute.String(telemetry.AttrToStatus, string(to)),
+		attribute.String(telemetry.AttrTriggerType, "api"),
+	)
+	defer span.End()
+	topic, err := h.q.TransitionTopic(ctx, dbgen.TransitionTopicParams{
+		TopicID: id, FromStatus: from, ToStatus: to,
+		ActorType: "user", TriggerType: "api",
+		TriggerID: pgtype.Text{String: middleware.GetReqID(r.Context()), Valid: true},
+		Reason:    pgtype.Text{String: reason, Valid: reason != ""},
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
+		telemetry.MarkError(span, err, "topic state changed concurrently")
 		// CAS 失败：并发下状态已变（或 topic 不存在）
 		if _, gerr := h.q.GetTopic(r.Context(), id); errors.Is(gerr, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "topic not found")
@@ -60,10 +84,13 @@ func (h *Server) transition(w http.ResponseWriter, r *http.Request, id TopicId, 
 		return
 	}
 	if err != nil {
+		telemetry.MarkError(span, err, "topic transition failed")
 		h.internalError(w, "transition topic", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toAPITopic(&topic))
+	telemetry.RecordTransition(ctx, string(from), string(to), "api")
+	converted := transitionRowToTopic(&topic)
+	writeJSON(w, http.StatusOK, toAPITopic(&converted))
 }
 
 func (h *Server) ListTopicEvaluations(w http.ResponseWriter, r *http.Request, topicId TopicId) {
@@ -388,7 +415,7 @@ func (h *Server) sendJob(ctx context.Context, q queue.Name, payload any) (int64,
 	var msgID int64
 	err := pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
 		var err error
-		msgID, err = queue.Send(ctx, tx, q, payload)
+		msgID, err = queue.Send(ctx, tx, q, payload, queue.WithTrigger("api"))
 		return err
 	})
 	return msgID, err
@@ -452,16 +479,19 @@ func readAll(r *http.Request) ([]byte, error) {
 func toAPIEvaluation(e *dbgen.ListTopicEvaluationsRow) TopicEvaluation {
 	var scores map[string]float32
 	_ = json.Unmarshal(e.DimensionScores, &scores)
+	var reasons map[string]string
+	_ = json.Unmarshal(e.DimensionReasons, &reasons)
 	total, _ := e.TotalScore.Float64Value()
 	out := TopicEvaluation{
-		Id:              e.ID,
-		TopicId:         e.TopicID,
-		RubricVersion:   e.RubricVersion,
-		DimensionScores: scores,
-		TotalScore:      float32(total.Float64),
-		Rationale:       e.Rationale,
-		JudgeModel:      e.JudgeModel,
-		CreatedAt:       e.CreatedAt.Time,
+		Id:               e.ID,
+		TopicId:          e.TopicID,
+		RubricVersion:    e.RubricVersion,
+		DimensionScores:  scores,
+		DimensionReasons: &reasons,
+		TotalScore:       float32(total.Float64),
+		Rationale:        e.Rationale,
+		JudgeModel:       e.JudgeModel,
+		CreatedAt:        e.CreatedAt.Time,
 	}
 	if e.AgentRunID.Valid {
 		id := e.AgentRunID.UUID
@@ -476,4 +506,13 @@ func toAPIEvaluation(e *dbgen.ListTopicEvaluationsRow) TopicEvaluation {
 		out.VetoedDimension = &vetoed
 	}
 	return out
+}
+
+func transitionRowToTopic(row *dbgen.TransitionTopicRow) dbgen.Topic {
+	return dbgen.Topic{
+		ID: row.ID, Title: row.Title, Angle: row.Angle, Summary: row.Summary,
+		RawItemIds: row.RawItemIds, TargetPlatforms: row.TargetPlatforms,
+		Status: row.Status, LatestScore: row.LatestScore, Embedding: row.Embedding,
+		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, CorrelationID: row.CorrelationID,
+	}
 }

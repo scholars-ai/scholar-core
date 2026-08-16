@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -101,6 +102,7 @@ func (h *Server) CreateManualTopic(w http.ResponseWriter, r *http.Request) {
 		Angle:           req.Angle,
 		Summary:         req.Summary,
 		TargetPlatforms: platforms,
+		CorrelationID:   uuid.NullUUID{UUID: uuid.New(), Valid: true},
 	})
 	if err != nil {
 		h.internalError(w, "create manual topic", err)

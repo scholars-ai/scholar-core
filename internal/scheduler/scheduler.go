@@ -20,9 +20,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel"
 
 	"github.com/scholars-ai/scholar-core/internal/db/dbgen"
 	"github.com/scholars-ai/scholar-core/internal/queue"
+	"github.com/scholars-ai/scholar-core/internal/telemetry"
 )
 
 // Settings 镜像 shared 的 SchedulerSettings schema（jsonb 整体存取，API 层已校验）。
@@ -100,7 +102,19 @@ func (s *Scheduler) Run(ctx context.Context) {
 }
 
 // Tick 执行一轮调度检查。导出以便测试与手动触发。
-func (s *Scheduler) Tick(ctx context.Context) error {
+
+func (s *Scheduler) Tick(ctx context.Context) (err error) {
+	started := time.Now()
+	ctx, span := otel.Tracer("scholar-core/scheduler").Start(ctx, "scheduler.tick")
+	defer func() {
+		status := "ok"
+		if err != nil {
+			status = "error"
+			telemetry.MarkError(span, err, "scheduler tick failed")
+		}
+		telemetry.RecordSchedulerTick(ctx, time.Since(started), status)
+		span.End()
+	}()
 	settings, err := s.loadSettings(ctx)
 	if err != nil {
 		return fmt.Errorf("load settings: %w", err)
@@ -115,6 +129,8 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 }
 
 func (s *Scheduler) loadSettings(ctx context.Context) (Settings, error) {
+	ctx, span := otel.Tracer("scholar-core/scheduler").Start(ctx, "scheduler.load_settings")
+	defer span.End()
 	row, err := s.q.GetSchedulerSettings(ctx)
 	if err != nil {
 		return Settings{}, err
@@ -129,6 +145,8 @@ func (s *Scheduler) loadSettings(ctx context.Context) (Settings, error) {
 // tickSourceFetch：到期的源投递 source_fetch。
 // 每个源独立事务：一个源失败不影响其他源（SPEC-008 §6 的隔离原则）。
 func (s *Scheduler) tickSourceFetch(ctx context.Context, settings Settings) {
+	ctx, span := otel.Tracer("scholar-core/scheduler").Start(ctx, "scheduler.find_due_sources")
+	defer span.End()
 	due, err := s.q.DueSources(ctx)
 	if err != nil {
 		s.log.Error("due sources query failed", "error", err)
@@ -161,6 +179,8 @@ func sourceInterval(raw []byte) time.Duration {
 }
 
 func (s *Scheduler) enqueueSourceFetch(ctx context.Context, sourceID uuid.UUID, interval time.Duration) error {
+	ctx, span := otel.Tracer("scholar-core/scheduler").Start(ctx, "scheduler.enqueue_source_fetch")
+	defer span.End()
 	now := s.now().UTC()
 	planned := now.Truncate(time.Minute)
 	key := "source_fetch:" + sourceID.String()
@@ -181,7 +201,7 @@ func (s *Scheduler) enqueueSourceFetch(ctx context.Context, sourceID uuid.UUID, 
 		}
 		msgID, err := queue.Send(ctx, tx, queue.SourceFetch, map[string]string{
 			"sourceId": sourceID.String(),
-		})
+		}, queue.WithTrigger("scheduler"))
 		if err != nil {
 			return err
 		}
@@ -197,6 +217,8 @@ func (s *Scheduler) enqueueSourceFetch(ctx context.Context, sourceID uuid.UUID, 
 
 // tickTopicScout：当前时刻（分钟粒度）命中配置的每日时刻则投递。
 func (s *Scheduler) tickTopicScout(ctx context.Context, settings Settings) {
+	ctx, span := otel.Tracer("scholar-core/scheduler").Start(ctx, "scheduler.enqueue_topic_scout")
+	defer span.End()
 	loc, err := time.LoadLocation(settings.TopicScout.Timezone)
 	if err != nil {
 		s.log.Warn("bad scout timezone, skipping", "tz", settings.TopicScout.Timezone)
@@ -245,7 +267,8 @@ func (s *Scheduler) tickTopicScout(ctx context.Context, settings Settings) {
 			s.log.Info("topic_scout skipped", "note", note)
 			return nil // 留痕但不入队
 		}
-		msgID, err := queue.Send(ctx, tx, queue.TopicScout, scheduledScoutPayload())
+		msgID, err := queue.Send(ctx, tx, queue.TopicScout, scheduledScoutPayload(),
+			queue.WithTrigger("scheduler"))
 		if err != nil {
 			return err
 		}

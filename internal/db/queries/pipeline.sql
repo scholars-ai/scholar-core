@@ -1,7 +1,8 @@
 -- name: PendingCandidates :many
 -- harvester：等待投递评分的 candidate（事件驱动，SPEC-008 §3.1 纪律 2）。
 -- 用 schedule_runs 的唯一约束防重投，此处只取状态。
-select id, title from topics where status = 'candidate' order by created_at limit $1;
+select id, title, correlation_id
+from topics where status = 'candidate' order by created_at limit $1;
 
 -- name: LatestEvaluation :one
 -- harvester：收割某选题最近一次评分
@@ -10,7 +11,7 @@ where topic_id = $1 order by created_at desc limit 1;
 
 -- name: ScoredTopicsWithoutTransition :many
 -- harvester：已有评分但状态仍是 candidate 的选题（评分完成，待推进状态机）
-select t.id, t.status, e.total_score, e.id as evaluation_id
+select t.id, t.status, t.correlation_id, e.total_score, e.id as evaluation_id
 from topics t
 join lateral (
     select id, total_score from topic_evaluations
@@ -20,13 +21,32 @@ where t.status = 'candidate'
 limit $1;
 
 -- name: TransitionTopic :one
--- 状态机唯一写入口：带前置状态条件的 CAS 更新。0 行 = 前置状态不符（并发或非法流转）。
-update topics set status = sqlc.arg('to_status'), latest_score = coalesce(sqlc.narg('score'), latest_score), updated_at = now()
-where id = $1 and status = sqlc.arg('from_status')
-returning *;
+-- 状态机唯一写入口：CAS 更新、审计事件同一 SQL/事务完成。
+with transitioned as (
+    update topics
+    set status = sqlc.arg('to_status'),
+        latest_score = coalesce(sqlc.narg('score'), latest_score),
+        updated_at = now()
+    where topics.id = sqlc.arg('topic_id') and topics.status = sqlc.arg('from_status')
+    returning topics.*
+), audited as (
+    insert into state_transition_events (
+        entity_type, entity_id, from_status, to_status,
+        actor_type, actor_id, trigger_type, trigger_id, reason,
+        correlation_id, metadata
+    )
+    select 'topic', transitioned.id, sqlc.arg('from_status')::text, sqlc.arg('to_status')::text,
+           sqlc.arg('actor_type')::text, sqlc.narg('actor_id')::text,
+           sqlc.arg('trigger_type')::text, sqlc.narg('trigger_id')::text,
+           sqlc.narg('reason')::text,
+           coalesce(sqlc.narg('correlation_id')::uuid, transitioned.correlation_id),
+           coalesce(sqlc.narg('metadata')::jsonb, '{}'::jsonb)
+    from transitioned
+)
+select * from transitioned;
 
 -- name: ListTopicEvaluations :many
-select id, topic_id, rubric_version, dimension_scores, total_score, rationale,
+select id, topic_id, rubric_version, dimension_scores, dimension_reasons, total_score, rationale,
        judge_model, agent_run_id, weight_version, vetoed_dimension, created_at
 from topic_evaluations
 where topic_id = $1
@@ -41,10 +61,13 @@ returning id;
 
 -- name: GetManualSource :one
 -- 手动投喂共用的内置 manual 源（seed 于迁移或首次使用时创建）
-select id from sources where type = 'manual' and name = 'Manual Feed' limit 1;
+select id from sources
+where type = 'manual' and name = 'Manual Feed' and archived_at is null
+limit 1;
 
 -- name: CreateManualSource :one
 insert into sources (name, type, url, category, weight, enabled, fetch_config)
 values ('Manual Feed', 'manual', null, 'news', 0.8, true, '{"role": "material", "full_text": "fetch_page"}')
-on conflict (name) do update set updated_at = now()
+on conflict (name) do update set
+    enabled = true, archived_at = null, updated_at = now()
 returning id;

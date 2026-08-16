@@ -1,7 +1,7 @@
 # 工具全部通过 go run 固定版本调用，无需本机安装
 SHARED ?= ../scholar-shared
 GOOSE_VERSION := v3.24.2
-SQLC_VERSION := v1.27.0
+SQLC_VERSION := v1.31.1
 OAPI_CODEGEN_VERSION := v2.4.1
 
 .PHONY: build test vet generate migrate-up migrate-down run

@@ -7,6 +7,7 @@ select s.*,
 from sources s
 left join source_health h on h.source_id = s.id
 where s.enabled = coalesce(sqlc.narg('enabled')::boolean, s.enabled)
+  and s.archived_at is null
 order by s.name;
 
 -- name: GetSource :one
@@ -17,7 +18,7 @@ select s.*,
        (select count(*) from raw_items r where r.source_id = s.id) as item_count
 from sources s
 left join source_health h on h.source_id = s.id
-where s.id = $1;
+where s.id = $1 and s.archived_at is null;
 
 -- name: CreateSource :one
 insert into sources (name, type, url, category, weight, enabled, fetch_config)
@@ -37,7 +38,10 @@ where id = $1
 returning *;
 
 -- name: DeleteSource :execrows
-delete from sources where id = $1;
+-- 历史素材必须保留其 source 外键和名称，因此 DELETE API 实现为归档。
+update sources
+set enabled = false, archived_at = now(), updated_at = now()
+where id = $1 and archived_at is null;
 
 -- name: DueSources :many
 -- 调度器 tick 用：到期该采集的 enabled 源。
@@ -46,6 +50,7 @@ select s.id, s.name, s.fetch_config
 from sources s
 left join source_health h on h.source_id = s.id
 where s.enabled
+  and s.archived_at is null
   and s.type <> 'manual'
   and (h.next_run_at is null or h.next_run_at <= now());
 

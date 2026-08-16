@@ -17,6 +17,8 @@ import (
 	"github.com/scholars-ai/scholar-core/internal/db"
 	"github.com/scholars-ai/scholar-core/internal/harvester"
 	"github.com/scholars-ai/scholar-core/internal/scheduler"
+	"github.com/scholars-ai/scholar-core/internal/telemetry"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 func main() {
@@ -35,12 +37,27 @@ func run(log *slog.Logger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	shutdownTelemetry, err := telemetry.Init(ctx, "scholar-core")
+	if err != nil {
+		log.Warn("telemetry initialization failed; continuing without export", "error", err)
+		shutdownTelemetry = func(context.Context) error { return nil }
+	}
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTelemetry(flushCtx); err != nil {
+			log.Warn("telemetry shutdown failed", "error", err)
+		}
+	}()
 
 	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
+	if err := telemetry.RegisterQueueMetrics(pool); err != nil {
+		log.Warn("queue metrics registration failed", "error", err)
+	}
 
 	// 调度与收割常驻协程：随主 ctx 一起优雅退出
 	sched := scheduler.New(pool, log)
@@ -55,6 +72,8 @@ func run(log *slog.Logger) error {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(30 * time.Second))
+	r.Use(otelhttp.NewMiddleware("scholar-core.http"))
+	r.Use(telemetry.HTTPMiddleware)
 	r.Mount("/api", api.Handler(api.NewServer(pool, log)))
 
 	srv := &http.Server{

@@ -12,6 +12,6 @@ where status = coalesce(sqlc.narg('status')::topic_status, status);
 select * from topics where id = $1;
 
 -- name: CreateManualTopic :one
-insert into topics (title, angle, summary, target_platforms, status)
-values ($1, $2, $3, $4, 'candidate')
+insert into topics (title, angle, summary, target_platforms, status, correlation_id)
+values ($1, $2, $3, $4, 'candidate', sqlc.arg('correlation_id'))
 returning *;
