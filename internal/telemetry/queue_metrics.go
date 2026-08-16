@@ -16,6 +16,14 @@ func RegisterQueueMetrics(pool *pgxpool.Pool) error {
 	if err != nil {
 		return err
 	}
+	inFlight, err := meter.Int64ObservableGauge("scholar_pgmq_in_flight_messages")
+	if err != nil {
+		return err
+	}
+	current, err := meter.Int64ObservableGauge("scholar_pgmq_current_messages")
+	if err != nil {
+		return err
+	}
 	total, err := meter.Int64ObservableGauge("scholar_pgmq_total_messages")
 	if err != nil {
 		return err
@@ -28,7 +36,8 @@ func RegisterQueueMetrics(pool *pgxpool.Pool) error {
 		queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 		rows, err := pool.Query(queryCtx, `
-			select queue_name, queue_length, total_messages, coalesce(oldest_msg_age_sec, 0)
+			select queue_name, queue_length, total_messages, queue_visible_length,
+			       coalesce(oldest_msg_age_sec, 0)
 			from pgmq.metrics_all()
 		`)
 		if err != nil {
@@ -37,16 +46,30 @@ func RegisterQueueMetrics(pool *pgxpool.Pool) error {
 		defer rows.Close()
 		for rows.Next() {
 			var queue string
-			var queueLength, totalMessages, oldestAge int64
-			if err := rows.Scan(&queue, &queueLength, &totalMessages, &oldestAge); err != nil {
+			var queueLength, totalMessages, visibleMessages, oldestAge int64
+			if err := rows.Scan(
+				&queue, &queueLength, &totalMessages, &visibleMessages, &oldestAge,
+			); err != nil {
 				continue
 			}
+			waitingMessages, inFlightMessages, currentMessages := queueDepths(
+				queueLength, visibleMessages,
+			)
 			attrs := metric.WithAttributes(attribute.String("queue", queue))
-			observer.ObserveInt64(visible, queueLength, attrs)
+			observer.ObserveInt64(visible, waitingMessages, attrs)
+			observer.ObserveInt64(inFlight, inFlightMessages, attrs)
+			observer.ObserveInt64(current, currentMessages, attrs)
 			observer.ObserveInt64(total, totalMessages, attrs)
 			observer.ObserveInt64(oldest, oldestAge, attrs)
 		}
 		return nil
-	}, visible, total, oldest)
+	}, visible, inFlight, current, total, oldest)
 	return err
+}
+
+func queueDepths(queueLength, visibleMessages int64) (waiting, inFlight, current int64) {
+	current = max(queueLength, 0)
+	waiting = min(max(visibleMessages, 0), current)
+	inFlight = current - waiting
+	return waiting, inFlight, current
 }
