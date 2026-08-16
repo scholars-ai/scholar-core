@@ -39,7 +39,6 @@ func TestArticleTransitions(t *testing.T) {
 		{dbgen.ArticleStatusDraft, dbgen.ArticleStatusScored},
 		{dbgen.ArticleStatusScored, dbgen.ArticleStatusPendingReview}, // 达标
 		{dbgen.ArticleStatusScored, dbgen.ArticleStatusRewriteQueued}, // 不达标回炉
-		{dbgen.ArticleStatusRewriteQueued, dbgen.ArticleStatusDraft},
 		{dbgen.ArticleStatusPendingReview, dbgen.ArticleStatusApproved},
 		{dbgen.ArticleStatusPendingReview, dbgen.ArticleStatusRejected},
 		{dbgen.ArticleStatusApproved, dbgen.ArticleStatusPublished},
@@ -56,6 +55,7 @@ func TestArticleTransitions(t *testing.T) {
 		{dbgen.ArticleStatusPublished, dbgen.ArticleStatusDraft},  // 终态
 		{dbgen.ArticleStatusRejected, dbgen.ArticleStatusScored},  // 终态
 		{dbgen.ArticleStatusScored, dbgen.ArticleStatusPublished}, // 必须过终审
+		{dbgen.ArticleStatusRewriteQueued, dbgen.ArticleStatusDraft}, // 新版本另建行，旧版本不可复用
 	}
 	for _, tc := range forbidden {
 		if CanArticleTransition(tc.from, tc.to) {

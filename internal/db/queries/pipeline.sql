@@ -55,6 +55,42 @@ where t.status = 'in_writing'
 order by t.updated_at, t.id
 limit $1;
 
+-- name: ArticleEvaluationsWithoutTransition :many
+-- ArticleJudge 已写回评分，但 Article 仍是 draft；先推进到 scored。
+select a.id, a.topic_id, a.platform, a.version, t.correlation_id,
+       e.id as evaluation_id, e.total_score
+from articles a
+join topics t on t.id = a.topic_id
+join lateral (
+    select id, total_score
+    from article_evaluations
+    where article_id = a.id
+    order by created_at desc
+    limit 1
+) e on true
+where a.status = 'draft'
+order by a.updated_at, a.id
+limit $1;
+
+-- name: ScoredArticlesWithoutDecision :many
+-- scored 是显式审计节点；随后按确定性 passed 判定进入人工终审或回炉。
+select a.id, a.topic_id, a.platform, a.version, t.correlation_id,
+       e.id as evaluation_id, e.total_score, e.passed, e.pass_threshold,
+       e.rationale, e.dimension_scores, e.dimension_reasons, e.vetoed_dimension
+from articles a
+join topics t on t.id = a.topic_id
+join lateral (
+    select id, total_score, passed, pass_threshold, rationale,
+           dimension_scores, dimension_reasons, vetoed_dimension
+    from article_evaluations
+    where article_id = a.id
+    order by created_at desc
+    limit 1
+) e on true
+where a.status = 'scored'
+order by a.updated_at, a.id
+limit $1;
+
 -- name: TransitionTopic :one
 -- 状态机唯一写入口：CAS 更新、审计事件同一 SQL/事务完成。
 with transitioned as (
@@ -75,6 +111,30 @@ with transitioned as (
            sqlc.arg('trigger_type')::text, sqlc.narg('trigger_id')::text,
            sqlc.narg('reason')::text,
            coalesce(sqlc.narg('correlation_id')::uuid, transitioned.correlation_id),
+           coalesce(sqlc.narg('metadata')::jsonb, '{}'::jsonb)
+    from transitioned
+)
+select * from transitioned;
+
+-- name: TransitionArticle :one
+-- Article 状态机唯一写入口：CAS 更新与审计事件同一 SQL 完成。
+with transitioned as (
+    update articles
+    set status = sqlc.arg('to_status'),
+        latest_score = coalesce(sqlc.narg('score'), latest_score),
+        updated_at = now()
+    where articles.id = sqlc.arg('article_id') and articles.status = sqlc.arg('from_status')
+    returning articles.*
+), audited as (
+    insert into state_transition_events (
+        entity_type, entity_id, from_status, to_status,
+        actor_type, actor_id, trigger_type, trigger_id, reason,
+        correlation_id, metadata
+    )
+    select 'article', transitioned.id, sqlc.arg('from_status')::text, sqlc.arg('to_status')::text,
+           sqlc.arg('actor_type')::text, sqlc.narg('actor_id')::text,
+           sqlc.arg('trigger_type')::text, sqlc.narg('trigger_id')::text,
+           sqlc.narg('reason')::text, sqlc.narg('correlation_id')::uuid,
            coalesce(sqlc.narg('metadata')::jsonb, '{}'::jsonb)
     from transitioned
 )

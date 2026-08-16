@@ -13,6 +13,62 @@ import (
 	pgvector_go "github.com/pgvector/pgvector-go"
 )
 
+const articleEvaluationsWithoutTransition = `-- name: ArticleEvaluationsWithoutTransition :many
+select a.id, a.topic_id, a.platform, a.version, t.correlation_id,
+       e.id as evaluation_id, e.total_score
+from articles a
+join topics t on t.id = a.topic_id
+join lateral (
+    select id, total_score
+    from article_evaluations
+    where article_id = a.id
+    order by created_at desc
+    limit 1
+) e on true
+where a.status = 'draft'
+order by a.updated_at, a.id
+limit $1
+`
+
+type ArticleEvaluationsWithoutTransitionRow struct {
+	ID            uuid.UUID      `json:"id"`
+	TopicID       uuid.UUID      `json:"topic_id"`
+	Platform      Platform       `json:"platform"`
+	Version       int32          `json:"version"`
+	CorrelationID uuid.NullUUID  `json:"correlation_id"`
+	EvaluationID  uuid.UUID      `json:"evaluation_id"`
+	TotalScore    pgtype.Numeric `json:"total_score"`
+}
+
+// ArticleJudge 已写回评分，但 Article 仍是 draft；先推进到 scored。
+func (q *Queries) ArticleEvaluationsWithoutTransition(ctx context.Context, limit int32) ([]ArticleEvaluationsWithoutTransitionRow, error) {
+	rows, err := q.db.Query(ctx, articleEvaluationsWithoutTransition, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ArticleEvaluationsWithoutTransitionRow
+	for rows.Next() {
+		var i ArticleEvaluationsWithoutTransitionRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TopicID,
+			&i.Platform,
+			&i.Version,
+			&i.CorrelationID,
+			&i.EvaluationID,
+			&i.TotalScore,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const createManualRawItem = `-- name: CreateManualRawItem :one
 insert into raw_items (source_id, title, url, content, content_hash, status)
 values ($1, $2, $3, $4, $5, 'new')
@@ -312,6 +368,76 @@ func (q *Queries) PendingCandidates(ctx context.Context, limit int32) ([]Pending
 	return items, nil
 }
 
+const scoredArticlesWithoutDecision = `-- name: ScoredArticlesWithoutDecision :many
+select a.id, a.topic_id, a.platform, a.version, t.correlation_id,
+       e.id as evaluation_id, e.total_score, e.passed, e.pass_threshold,
+       e.rationale, e.dimension_scores, e.dimension_reasons, e.vetoed_dimension
+from articles a
+join topics t on t.id = a.topic_id
+join lateral (
+    select id, total_score, passed, pass_threshold, rationale,
+           dimension_scores, dimension_reasons, vetoed_dimension
+    from article_evaluations
+    where article_id = a.id
+    order by created_at desc
+    limit 1
+) e on true
+where a.status = 'scored'
+order by a.updated_at, a.id
+limit $1
+`
+
+type ScoredArticlesWithoutDecisionRow struct {
+	ID               uuid.UUID      `json:"id"`
+	TopicID          uuid.UUID      `json:"topic_id"`
+	Platform         Platform       `json:"platform"`
+	Version          int32          `json:"version"`
+	CorrelationID    uuid.NullUUID  `json:"correlation_id"`
+	EvaluationID     uuid.UUID      `json:"evaluation_id"`
+	TotalScore       pgtype.Numeric `json:"total_score"`
+	Passed           bool           `json:"passed"`
+	PassThreshold    pgtype.Numeric `json:"pass_threshold"`
+	Rationale        string         `json:"rationale"`
+	DimensionScores  []byte         `json:"dimension_scores"`
+	DimensionReasons []byte         `json:"dimension_reasons"`
+	VetoedDimension  pgtype.Text    `json:"vetoed_dimension"`
+}
+
+// scored 是显式审计节点；随后按确定性 passed 判定进入人工终审或回炉。
+func (q *Queries) ScoredArticlesWithoutDecision(ctx context.Context, limit int32) ([]ScoredArticlesWithoutDecisionRow, error) {
+	rows, err := q.db.Query(ctx, scoredArticlesWithoutDecision, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ScoredArticlesWithoutDecisionRow
+	for rows.Next() {
+		var i ScoredArticlesWithoutDecisionRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TopicID,
+			&i.Platform,
+			&i.Version,
+			&i.CorrelationID,
+			&i.EvaluationID,
+			&i.TotalScore,
+			&i.Passed,
+			&i.PassThreshold,
+			&i.Rationale,
+			&i.DimensionScores,
+			&i.DimensionReasons,
+			&i.VetoedDimension,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const scoredTopicsWithoutTransition = `-- name: ScoredTopicsWithoutTransition :many
 select t.id, t.status, t.correlation_id, e.total_score, e.id as evaluation_id
 from topics t
@@ -356,6 +482,96 @@ func (q *Queries) ScoredTopicsWithoutTransition(ctx context.Context, limit int32
 		return nil, err
 	}
 	return items, nil
+}
+
+const transitionArticle = `-- name: TransitionArticle :one
+with transitioned as (
+    update articles
+    set status = $1,
+        latest_score = coalesce($2, latest_score),
+        updated_at = now()
+    where articles.id = $3 and articles.status = $4
+    returning articles.id, articles.topic_id, articles.platform, articles.version, articles.format, articles.title, articles.content_md, articles.assets, articles.writer_agent, articles.status, articles.latest_score, articles.created_at, articles.updated_at, articles.previous_article_id
+), audited as (
+    insert into state_transition_events (
+        entity_type, entity_id, from_status, to_status,
+        actor_type, actor_id, trigger_type, trigger_id, reason,
+        correlation_id, metadata
+    )
+    select 'article', transitioned.id, $4::text, $1::text,
+           $5::text, $6::text,
+           $7::text, $8::text,
+           $9::text, $10::uuid,
+           coalesce($11::jsonb, '{}'::jsonb)
+    from transitioned
+)
+select id, topic_id, platform, version, format, title, content_md, assets, writer_agent, status, latest_score, created_at, updated_at, previous_article_id from transitioned
+`
+
+type TransitionArticleParams struct {
+	ToStatus      ArticleStatus  `json:"to_status"`
+	Score         pgtype.Numeric `json:"score"`
+	ArticleID     uuid.UUID      `json:"article_id"`
+	FromStatus    ArticleStatus  `json:"from_status"`
+	ActorType     string         `json:"actor_type"`
+	ActorID       pgtype.Text    `json:"actor_id"`
+	TriggerType   string         `json:"trigger_type"`
+	TriggerID     pgtype.Text    `json:"trigger_id"`
+	Reason        pgtype.Text    `json:"reason"`
+	CorrelationID uuid.NullUUID  `json:"correlation_id"`
+	Metadata      []byte         `json:"metadata"`
+}
+
+type TransitionArticleRow struct {
+	ID                uuid.UUID          `json:"id"`
+	TopicID           uuid.UUID          `json:"topic_id"`
+	Platform          Platform           `json:"platform"`
+	Version           int32              `json:"version"`
+	Format            ArticleFormat      `json:"format"`
+	Title             string             `json:"title"`
+	ContentMd         string             `json:"content_md"`
+	Assets            []byte             `json:"assets"`
+	WriterAgent       string             `json:"writer_agent"`
+	Status            ArticleStatus      `json:"status"`
+	LatestScore       pgtype.Numeric     `json:"latest_score"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	PreviousArticleID uuid.NullUUID      `json:"previous_article_id"`
+}
+
+// Article 状态机唯一写入口：CAS 更新与审计事件同一 SQL 完成。
+func (q *Queries) TransitionArticle(ctx context.Context, arg TransitionArticleParams) (TransitionArticleRow, error) {
+	row := q.db.QueryRow(ctx, transitionArticle,
+		arg.ToStatus,
+		arg.Score,
+		arg.ArticleID,
+		arg.FromStatus,
+		arg.ActorType,
+		arg.ActorID,
+		arg.TriggerType,
+		arg.TriggerID,
+		arg.Reason,
+		arg.CorrelationID,
+		arg.Metadata,
+	)
+	var i TransitionArticleRow
+	err := row.Scan(
+		&i.ID,
+		&i.TopicID,
+		&i.Platform,
+		&i.Version,
+		&i.Format,
+		&i.Title,
+		&i.ContentMd,
+		&i.Assets,
+		&i.WriterAgent,
+		&i.Status,
+		&i.LatestScore,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.PreviousArticleID,
+	)
+	return i, err
 }
 
 const transitionTopic = `-- name: TransitionTopic :one

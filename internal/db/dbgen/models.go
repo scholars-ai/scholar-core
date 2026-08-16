@@ -512,31 +512,37 @@ type AgentRun struct {
 }
 
 type Article struct {
-	ID          uuid.UUID          `json:"id"`
-	TopicID     uuid.UUID          `json:"topic_id"`
-	Platform    Platform           `json:"platform"`
-	Version     int32              `json:"version"`
-	Format      ArticleFormat      `json:"format"`
-	Title       string             `json:"title"`
-	ContentMd   string             `json:"content_md"`
-	Assets      []byte             `json:"assets"`
-	WriterAgent string             `json:"writer_agent"`
-	Status      ArticleStatus      `json:"status"`
-	LatestScore pgtype.Numeric     `json:"latest_score"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	ID                uuid.UUID          `json:"id"`
+	TopicID           uuid.UUID          `json:"topic_id"`
+	Platform          Platform           `json:"platform"`
+	Version           int32              `json:"version"`
+	Format            ArticleFormat      `json:"format"`
+	Title             string             `json:"title"`
+	ContentMd         string             `json:"content_md"`
+	Assets            []byte             `json:"assets"`
+	WriterAgent       string             `json:"writer_agent"`
+	Status            ArticleStatus      `json:"status"`
+	LatestScore       pgtype.Numeric     `json:"latest_score"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	PreviousArticleID uuid.NullUUID      `json:"previous_article_id"`
 }
 
 type ArticleEvaluation struct {
-	ID              uuid.UUID          `json:"id"`
-	ArticleID       uuid.UUID          `json:"article_id"`
-	RubricVersion   string             `json:"rubric_version"`
-	DimensionScores []byte             `json:"dimension_scores"`
-	TotalScore      pgtype.Numeric     `json:"total_score"`
-	Rationale       string             `json:"rationale"`
-	JudgeModel      string             `json:"judge_model"`
-	AgentRunID      uuid.NullUUID      `json:"agent_run_id"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	ID               uuid.UUID          `json:"id"`
+	ArticleID        uuid.UUID          `json:"article_id"`
+	RubricVersion    string             `json:"rubric_version"`
+	DimensionScores  []byte             `json:"dimension_scores"`
+	TotalScore       pgtype.Numeric     `json:"total_score"`
+	Rationale        string             `json:"rationale"`
+	JudgeModel       string             `json:"judge_model"`
+	AgentRunID       uuid.NullUUID      `json:"agent_run_id"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	DimensionReasons []byte             `json:"dimension_reasons"`
+	WeightVersion    pgtype.Int4        `json:"weight_version"`
+	VetoedDimension  pgtype.Text        `json:"vetoed_dimension"`
+	PassThreshold    pgtype.Numeric     `json:"pass_threshold"`
+	Passed           bool               `json:"passed"`
 }
 
 type Insight struct {

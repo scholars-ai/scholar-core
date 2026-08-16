@@ -22,7 +22,8 @@ var topicTransitions = map[dbgen.TopicStatus][]dbgen.TopicStatus{
 var articleTransitions = map[dbgen.ArticleStatus][]dbgen.ArticleStatus{
 	dbgen.ArticleStatusDraft:         {dbgen.ArticleStatusScored},
 	dbgen.ArticleStatusScored:        {dbgen.ArticleStatusPendingReview, dbgen.ArticleStatusRewriteQueued},
-	dbgen.ArticleStatusRewriteQueued: {dbgen.ArticleStatusDraft},
+	// 每个版本一行且不可变：rewrite_queued 是旧版本终态，新版本另建 draft 行。
+	dbgen.ArticleStatusRewriteQueued: {},
 	dbgen.ArticleStatusPendingReview: {dbgen.ArticleStatusApproved, dbgen.ArticleStatusRejected},
 	dbgen.ArticleStatusApproved:      {dbgen.ArticleStatusPublished},
 	dbgen.ArticleStatusPublished:     {},
