@@ -58,6 +58,9 @@ func run(log *slog.Logger) error {
 	if err := telemetry.RegisterQueueMetrics(pool); err != nil {
 		log.Warn("queue metrics registration failed", "error", err)
 	}
+	if err := telemetry.RegisterDBPoolMetrics(pool); err != nil {
+		log.Warn("database pool metrics registration failed", "error", err)
+	}
 
 	// 调度与收割常驻协程：随主 ctx 一起优雅退出
 	sched := scheduler.New(pool, log)
