@@ -57,6 +57,49 @@ func (q *Queries) CreateManualSource(ctx context.Context) (uuid.UUID, error) {
 	return id, err
 }
 
+const draftArticlesPendingEvaluation = `-- name: DraftArticlesPendingEvaluation :many
+select a.id, a.topic_id, a.platform, t.correlation_id
+from articles a
+join topics t on t.id = a.topic_id
+where a.status = 'draft'
+order by a.created_at, a.id
+limit $1
+`
+
+type DraftArticlesPendingEvaluationRow struct {
+	ID            uuid.UUID     `json:"id"`
+	TopicID       uuid.UUID     `json:"topic_id"`
+	Platform      Platform      `json:"platform"`
+	CorrelationID uuid.NullUUID `json:"correlation_id"`
+}
+
+// M2 harvester：Article 已由 agents 写回，但尚未投递独立评分任务。
+// schedule_runs 负责最终防重；这里保持查询简单，便于故障后重新扫描。
+func (q *Queries) DraftArticlesPendingEvaluation(ctx context.Context, limit int32) ([]DraftArticlesPendingEvaluationRow, error) {
+	rows, err := q.db.Query(ctx, draftArticlesPendingEvaluation, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DraftArticlesPendingEvaluationRow
+	for rows.Next() {
+		var i DraftArticlesPendingEvaluationRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TopicID,
+			&i.Platform,
+			&i.CorrelationID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getManualSource = `-- name: GetManualSource :one
 select id from sources
 where type = 'manual' and name = 'Manual Feed' and archived_at is null
@@ -69,6 +112,49 @@ func (q *Queries) GetManualSource(ctx context.Context) (uuid.UUID, error) {
 	var id uuid.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const inWritingTopicsReady = `-- name: InWritingTopicsReady :many
+select t.id, t.correlation_id
+from topics t
+where t.status = 'in_writing'
+  and not exists (
+      select 1
+      from unnest(t.target_platforms) as target(platform)
+      where not exists (
+          select 1
+          from articles a
+          where a.topic_id = t.id and a.platform = target.platform
+      )
+  )
+order by t.updated_at, t.id
+limit $1
+`
+
+type InWritingTopicsReadyRow struct {
+	ID            uuid.UUID     `json:"id"`
+	CorrelationID uuid.NullUUID `json:"correlation_id"`
+}
+
+// 只有 target_platforms 中每个平台都至少已有一篇文章，Topic 才算写作完成。
+func (q *Queries) InWritingTopicsReady(ctx context.Context, limit int32) ([]InWritingTopicsReadyRow, error) {
+	rows, err := q.db.Query(ctx, inWritingTopicsReady, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []InWritingTopicsReadyRow
+	for rows.Next() {
+		var i InWritingTopicsReadyRow
+		if err := rows.Scan(&i.ID, &i.CorrelationID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const latestEvaluation = `-- name: LatestEvaluation :one
@@ -141,6 +227,47 @@ func (q *Queries) ListTopicEvaluations(ctx context.Context, topicID uuid.UUID) (
 			&i.WeightVersion,
 			&i.VetoedDimension,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const pendingApprovedTopics = `-- name: PendingApprovedTopics :many
+select id, title, target_platforms, correlation_id
+from topics
+where status = 'approved'
+order by updated_at, id
+limit $1
+`
+
+type PendingApprovedTopicsRow struct {
+	ID              uuid.UUID     `json:"id"`
+	Title           string        `json:"title"`
+	TargetPlatforms []Platform    `json:"target_platforms"`
+	CorrelationID   uuid.NullUUID `json:"correlation_id"`
+}
+
+// M2 harvester：等待按目标平台分派写作的 approved 选题。
+func (q *Queries) PendingApprovedTopics(ctx context.Context, limit int32) ([]PendingApprovedTopicsRow, error) {
+	rows, err := q.db.Query(ctx, pendingApprovedTopics, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PendingApprovedTopicsRow
+	for rows.Next() {
+		var i PendingApprovedTopicsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.TargetPlatforms,
+			&i.CorrelationID,
 		); err != nil {
 			return nil, err
 		}

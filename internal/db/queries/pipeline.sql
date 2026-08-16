@@ -20,6 +20,41 @@ join lateral (
 where t.status = 'candidate'
 limit $1;
 
+-- name: PendingApprovedTopics :many
+-- M2 harvester：等待按目标平台分派写作的 approved 选题。
+select id, title, target_platforms, correlation_id
+from topics
+where status = 'approved'
+order by updated_at, id
+limit $1;
+
+-- name: DraftArticlesPendingEvaluation :many
+-- M2 harvester：Article 已由 agents 写回，但尚未投递独立评分任务。
+-- schedule_runs 负责最终防重；这里保持查询简单，便于故障后重新扫描。
+select a.id, a.topic_id, a.platform, t.correlation_id
+from articles a
+join topics t on t.id = a.topic_id
+where a.status = 'draft'
+order by a.created_at, a.id
+limit $1;
+
+-- name: InWritingTopicsReady :many
+-- 只有 target_platforms 中每个平台都至少已有一篇文章，Topic 才算写作完成。
+select t.id, t.correlation_id
+from topics t
+where t.status = 'in_writing'
+  and not exists (
+      select 1
+      from unnest(t.target_platforms) as target(platform)
+      where not exists (
+          select 1
+          from articles a
+          where a.topic_id = t.id and a.platform = target.platform
+      )
+  )
+order by t.updated_at, t.id
+limit $1;
+
 -- name: TransitionTopic :one
 -- 状态机唯一写入口：CAS 更新、审计事件同一 SQL/事务完成。
 with transitioned as (

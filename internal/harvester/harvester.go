@@ -1,8 +1,10 @@
 // Package harvester 收割 agents 写入的结果并推进状态机（唯一写入口原则）。
 //
-// 两个职责（SPEC-008 §3）：
+// M1/M2 职责：
 //  1. 新 candidate → **事件驱动**投递 topic_evaluate（不等固定时刻，纪律 2）
 //  2. 已有评分的 candidate → 推进 candidate→scored / <60 自动 rejected
+//  3. approved → 按 target_platforms 原子投递 article_write 并推进 in_writing
+//  4. Article(draft) → 投递 article_evaluate；全平台文章齐备后 Topic → written
 //
 // 轮询间隔 15s：candidate 产生到评分入队 < 1 分钟的验收要求（SPEC-008 §6）。
 // 防重投复用 schedule_runs 唯一约束（key = topic_evaluate:<topic_id>）。
@@ -72,6 +74,169 @@ func (h *Harvester) Tick(ctx context.Context) {
 	}()
 	h.enqueueEvaluations(ctx)
 	h.transitionScored(ctx)
+	h.enqueueWriting(ctx)
+	h.enqueueArticleEvaluations(ctx)
+	h.transitionWritten(ctx)
+}
+
+// enqueueWriting：按平台分派 approved Topic。所有入队与 approved→in_writing 审计同事务。
+func (h *Harvester) enqueueWriting(ctx context.Context) {
+	ctx, span := otel.Tracer("scholar-core/harvester").Start(ctx, "harvester.scan_approved_topics")
+	defer span.End()
+	topics, err := h.q.PendingApprovedTopics(ctx, 50)
+	if err != nil {
+		h.log.Error("pending approved topics query failed", "error", err)
+		return
+	}
+	for _, topic := range topics {
+		if err := h.enqueueTopicWriting(ctx, topic.ID, topic.TargetPlatforms, topic.CorrelationID); err != nil {
+			h.log.Warn("enqueue article_write failed", "topic", topic.Title, "error", err)
+		}
+	}
+}
+
+func (h *Harvester) enqueueTopicWriting(
+	ctx context.Context,
+	topicID uuid.UUID,
+	platforms []dbgen.Platform,
+	correlationID uuid.NullUUID,
+) error {
+	ctx, span := otel.Tracer("scholar-core/harvester").Start(ctx, "harvester.enqueue_article_write")
+	span.SetAttributes(attribute.String(telemetry.AttrTopicID, topicID.String()))
+	defer span.End()
+	if len(platforms) == 0 {
+		return fmt.Errorf("topic %s has no target platforms", topicID)
+	}
+	epoch := time.Unix(0, 0).UTC()
+	return pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
+		qtx := h.q.WithTx(tx)
+		for _, platform := range platforms {
+			runID, err := qtx.RecordScheduleRun(ctx, dbgen.RecordScheduleRunParams{
+				ScheduleKey: articleWriteScheduleKey(topicID, platform),
+				PlannedAt:   pgtype.Timestamptz{Time: epoch, Valid: true},
+				Queue:       string(queue.ArticleWrite),
+			})
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			opts := []queue.SendOption{queue.WithTrigger("harvester")}
+			if correlationID.Valid {
+				opts = append(opts, queue.WithCorrelation(correlationID.UUID))
+			}
+			msgID, err := queue.Send(ctx, tx, queue.ArticleWrite, map[string]string{
+				"topicId":  topicID.String(),
+				"platform": string(platform),
+			}, opts...)
+			if err != nil {
+				return err
+			}
+			if err := qtx.UpdateScheduleRunMsgID(ctx, dbgen.UpdateScheduleRunMsgIDParams{
+				MsgID: pgtype.Int8{Int64: msgID, Valid: true}, ID: runID,
+			}); err != nil {
+				return err
+			}
+		}
+		if !pipeline.CanTopicTransition(dbgen.TopicStatusApproved, dbgen.TopicStatusInWriting) {
+			return pipeline.ErrInvalidTransition("topic", "approved", "in_writing")
+		}
+		_, err := qtx.TransitionTopic(ctx, dbgen.TransitionTopicParams{
+			TopicID: topicID, FromStatus: dbgen.TopicStatusApproved,
+			ToStatus:  dbgen.TopicStatusInWriting,
+			ActorType: "system", TriggerType: "harvester",
+			Reason:        pgtype.Text{String: "writing jobs dispatched for all target platforms", Valid: true},
+			CorrelationID: correlationID,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	})
+}
+
+func articleWriteScheduleKey(topicID uuid.UUID, platform dbgen.Platform) string {
+	return fmt.Sprintf("article_write:%s:%s", topicID, platform)
+}
+
+// enqueueArticleEvaluations：Agents 只写 Article，评分任务仍由 Core 投递。
+func (h *Harvester) enqueueArticleEvaluations(ctx context.Context) {
+	ctx, span := otel.Tracer("scholar-core/harvester").Start(ctx, "harvester.scan_draft_articles")
+	defer span.End()
+	articles, err := h.q.DraftArticlesPendingEvaluation(ctx, 100)
+	if err != nil {
+		h.log.Error("draft articles query failed", "error", err)
+		return
+	}
+	for _, article := range articles {
+		if err := h.enqueueArticleEvaluation(ctx, article.ID, article.CorrelationID); err != nil {
+			h.log.Warn("enqueue article_evaluate failed", "article", article.ID, "error", err)
+		}
+	}
+}
+
+func (h *Harvester) enqueueArticleEvaluation(
+	ctx context.Context, articleID uuid.UUID, correlationID uuid.NullUUID,
+) error {
+	epoch := time.Unix(0, 0).UTC()
+	return pgx.BeginFunc(ctx, h.pool, func(tx pgx.Tx) error {
+		qtx := h.q.WithTx(tx)
+		runID, err := qtx.RecordScheduleRun(ctx, dbgen.RecordScheduleRunParams{
+			ScheduleKey: "article_evaluate:" + articleID.String(),
+			PlannedAt:   pgtype.Timestamptz{Time: epoch, Valid: true},
+			Queue:       string(queue.ArticleEvaluate),
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		opts := []queue.SendOption{queue.WithTrigger("harvester")}
+		if correlationID.Valid {
+			opts = append(opts, queue.WithCorrelation(correlationID.UUID))
+		}
+		msgID, err := queue.Send(ctx, tx, queue.ArticleEvaluate, map[string]string{
+			"articleId": articleID.String(),
+		}, opts...)
+		if err != nil {
+			return err
+		}
+		return qtx.UpdateScheduleRunMsgID(ctx, dbgen.UpdateScheduleRunMsgIDParams{
+			MsgID: pgtype.Int8{Int64: msgID, Valid: true}, ID: runID,
+		})
+	})
+}
+
+func (h *Harvester) transitionWritten(ctx context.Context) {
+	rows, err := h.q.InWritingTopicsReady(ctx, 50)
+	if err != nil {
+		h.log.Error("in-writing topics query failed", "error", err)
+		return
+	}
+	for _, row := range rows {
+		if !pipeline.CanTopicTransition(dbgen.TopicStatusInWriting, dbgen.TopicStatusWritten) {
+			h.log.Error("illegal transition blocked", "from", "in_writing", "to", "written")
+			return
+		}
+		_, err := h.q.TransitionTopic(ctx, dbgen.TransitionTopicParams{
+			TopicID: row.ID, FromStatus: dbgen.TopicStatusInWriting,
+			ToStatus:  dbgen.TopicStatusWritten,
+			ActorType: "system", TriggerType: "harvester",
+			Reason:        pgtype.Text{String: "all target platform articles created", Valid: true},
+			CorrelationID: row.CorrelationID,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			h.log.Error("written transition failed", "topic", row.ID, "error", err)
+			continue
+		}
+		telemetry.RecordTransition(ctx, string(dbgen.TopicStatusInWriting), string(dbgen.TopicStatusWritten), "harvester")
+		h.log.Info("topic writing completed", "topic", row.ID)
+	}
 }
 
 // enqueueEvaluations：为尚无评分任务的 candidate 投递 topic_evaluate。
