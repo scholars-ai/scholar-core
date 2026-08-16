@@ -599,6 +599,7 @@ type Publication struct {
 	FinalContentDiff       pgtype.Text        `json:"final_content_diff"`
 	FollowerCountAtPublish pgtype.Int4        `json:"follower_count_at_publish"`
 	CreatedAt              pgtype.Timestamptz `json:"created_at"`
+	EditRatio              pgtype.Numeric     `json:"edit_ratio"`
 }
 
 type RawItem struct {

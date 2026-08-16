@@ -40,8 +40,8 @@ func (h *Server) GetHealth(w http.ResponseWriter, r *http.Request) {
 // oapi-codegen 只生成类型别名不做运行时校验，非法值若直传 DB 会引发 enum 转换错误
 // 并冒成 500 —— 那是客户端错误，必须在这里拦成 400。
 var validTopicStatuses = map[TopicStatus]bool{
-	Candidate: true, Scored: true, Approved: true,
-	InWriting: true, Written: true, Rejected: true,
+	TopicStatusCandidate: true, TopicStatusScored: true, TopicStatusApproved: true,
+	TopicStatusInWriting: true, TopicStatusWritten: true, TopicStatusRejected: true,
 }
 
 func (h *Server) ListTopics(w http.ResponseWriter, r *http.Request, params ListTopicsParams) {

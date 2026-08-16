@@ -14,7 +14,7 @@ import (
 // 类型别名（string），不做运行时校验；直传 DB 会触发 enum 转换错误并冒成 500，
 // 而那本质是客户端错误。
 func TestValidTopicStatuses(t *testing.T) {
-	valid := []TopicStatus{Candidate, Scored, Approved, InWriting, Written, Rejected}
+	valid := []TopicStatus{TopicStatusCandidate, TopicStatusScored, TopicStatusApproved, TopicStatusInWriting, TopicStatusWritten, TopicStatusRejected}
 	for _, s := range valid {
 		if !validTopicStatuses[s] {
 			t.Errorf("status %q should be accepted", string(s))

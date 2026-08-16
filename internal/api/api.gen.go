@@ -20,6 +20,24 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for ArticleFormat.
+const (
+	Html     ArticleFormat = "html"
+	Markdown ArticleFormat = "markdown"
+	RichText ArticleFormat = "rich_text"
+)
+
+// Defines values for ArticleStatus.
+const (
+	ArticleStatusApproved      ArticleStatus = "approved"
+	ArticleStatusDraft         ArticleStatus = "draft"
+	ArticleStatusPendingReview ArticleStatus = "pending_review"
+	ArticleStatusPublished     ArticleStatus = "published"
+	ArticleStatusRejected      ArticleStatus = "rejected"
+	ArticleStatusRewriteQueued ArticleStatus = "rewrite_queued"
+	ArticleStatusScored        ArticleStatus = "scored"
+)
+
 // Defines values for FullTextStrategy.
 const (
 	FetchPage      FullTextStrategy = "fetch_page"
@@ -68,13 +86,91 @@ const (
 
 // Defines values for TopicStatus.
 const (
-	Approved  TopicStatus = "approved"
-	Candidate TopicStatus = "candidate"
-	InWriting TopicStatus = "in_writing"
-	Rejected  TopicStatus = "rejected"
-	Scored    TopicStatus = "scored"
-	Written   TopicStatus = "written"
+	TopicStatusApproved  TopicStatus = "approved"
+	TopicStatusCandidate TopicStatus = "candidate"
+	TopicStatusInWriting TopicStatus = "in_writing"
+	TopicStatusRejected  TopicStatus = "rejected"
+	TopicStatusScored    TopicStatus = "scored"
+	TopicStatusWritten   TopicStatus = "written"
 )
+
+// Article defines model for Article.
+type Article struct {
+	Assets            []map[string]interface{} `json:"assets"`
+	ContentMd         string                   `json:"contentMd"`
+	CreatedAt         time.Time                `json:"createdAt"`
+	Format            ArticleFormat            `json:"format"`
+	Id                openapi_types.UUID       `json:"id"`
+	LatestScore       *float32                 `json:"latestScore"`
+	Platform          Platform                 `json:"platform"`
+	PreviousArticleId *openapi_types.UUID      `json:"previousArticleId"`
+	Status            ArticleStatus            `json:"status"`
+	Title             string                   `json:"title"`
+	TopicId           openapi_types.UUID       `json:"topicId"`
+	UpdatedAt         time.Time                `json:"updatedAt"`
+	Version           int                      `json:"version"`
+	WriterAgent       string                   `json:"writerAgent"`
+}
+
+// ArticleDetail defines model for ArticleDetail.
+type ArticleDetail struct {
+	Article      Article             `json:"article"`
+	Evaluations  []ArticleEvaluation `json:"evaluations"`
+	Publications []Publication       `json:"publications"`
+	Topic        Topic               `json:"topic"`
+	Versions     []Article           `json:"versions"`
+}
+
+// ArticleEvaluation defines model for ArticleEvaluation.
+type ArticleEvaluation struct {
+	AgentRunId       *openapi_types.UUID `json:"agentRunId"`
+	ArticleId        openapi_types.UUID  `json:"articleId"`
+	CreatedAt        time.Time           `json:"createdAt"`
+	DimensionReasons map[string]string   `json:"dimensionReasons"`
+	DimensionScores  map[string]float32  `json:"dimensionScores"`
+	Id               openapi_types.UUID  `json:"id"`
+	JudgeModel       string              `json:"judgeModel"`
+	PassThreshold    float32             `json:"passThreshold"`
+	Passed           bool                `json:"passed"`
+	Rationale        string              `json:"rationale"`
+	RubricVersion    string              `json:"rubricVersion"`
+	TotalScore       float32             `json:"totalScore"`
+	VetoedDimension  *string             `json:"vetoedDimension"`
+	WeightVersion    *int                `json:"weightVersion"`
+}
+
+// ArticleFormat defines model for ArticleFormat.
+type ArticleFormat string
+
+// ArticleList defines model for ArticleList.
+type ArticleList struct {
+	Items []ArticleReview `json:"items"`
+	Total int             `json:"total"`
+}
+
+// ArticleReview defines model for ArticleReview.
+type ArticleReview struct {
+	Article          Article            `json:"article"`
+	LatestEvaluation *ArticleEvaluation `json:"latestEvaluation,omitempty"`
+	PublicationCount int                `json:"publicationCount"`
+	TopicTitle       string             `json:"topicTitle"`
+}
+
+// ArticleStatus defines model for ArticleStatus.
+type ArticleStatus string
+
+// CreatePublicationRequest defines model for CreatePublicationRequest.
+type CreatePublicationRequest struct {
+	FinalContentMd         string `json:"finalContentMd"`
+	FinalTitle             string `json:"finalTitle"`
+	FollowerCountAtPublish *int   `json:"followerCountAtPublish"`
+
+	// PlatformPostId 平台侧 ID 或公开链接
+	PlatformPostId string `json:"platformPostId"`
+
+	// PublishedAt 未传时由 Core 使用当前时间
+	PublishedAt *time.Time `json:"publishedAt,omitempty"`
+}
 
 // CreateTopicRequest defines model for CreateTopicRequest.
 type CreateTopicRequest struct {
@@ -120,6 +216,25 @@ type JobAccepted struct {
 
 // Platform defines model for Platform.
 type Platform string
+
+// Publication defines model for Publication.
+type Publication struct {
+	ArticleId              openapi_types.UUID `json:"articleId"`
+	CreatedAt              time.Time          `json:"createdAt"`
+	EditRatio              *float32           `json:"editRatio"`
+	FinalContentDiff       *string            `json:"finalContentDiff"`
+	FollowerCountAtPublish *int               `json:"followerCountAtPublish"`
+	Id                     openapi_types.UUID `json:"id"`
+	Platform               Platform           `json:"platform"`
+	PlatformPostId         *string            `json:"platformPostId"`
+	PublishedAt            time.Time          `json:"publishedAt"`
+}
+
+// RejectArticleRequest defines model for RejectArticleRequest.
+type RejectArticleRequest struct {
+	// Reason 终审拒绝原因
+	Reason *string `json:"reason,omitempty"`
+}
 
 // RejectTopicRequest defines model for RejectTopicRequest.
 type RejectTopicRequest struct {
@@ -284,6 +399,9 @@ type TopicScoutSchedule struct {
 // TopicStatus defines model for TopicStatus.
 type TopicStatus string
 
+// ArticleId defines model for ArticleId.
+type ArticleId = openapi_types.UUID
+
 // SourceId defines model for SourceId.
 type SourceId = openapi_types.UUID
 
@@ -299,6 +417,15 @@ type Conflict = Error
 // NotFound defines model for NotFound.
 type NotFound = Error
 
+// ListArticlesParams defines parameters for ListArticles.
+type ListArticlesParams struct {
+	Status   *ArticleStatus      `form:"status,omitempty" json:"status,omitempty"`
+	Platform *Platform           `form:"platform,omitempty" json:"platform,omitempty"`
+	TopicId  *openapi_types.UUID `form:"topicId,omitempty" json:"topicId,omitempty"`
+	Limit    *int                `form:"limit,omitempty" json:"limit,omitempty"`
+	Offset   *int                `form:"offset,omitempty" json:"offset,omitempty"`
+}
+
 // ListSourcesParams defines parameters for ListSources.
 type ListSourcesParams struct {
 	Enabled *bool `form:"enabled,omitempty" json:"enabled,omitempty"`
@@ -310,6 +437,12 @@ type ListTopicsParams struct {
 	Limit  *int         `form:"limit,omitempty" json:"limit,omitempty"`
 	Offset *int         `form:"offset,omitempty" json:"offset,omitempty"`
 }
+
+// CreatePublicationJSONRequestBody defines body for CreatePublication for application/json ContentType.
+type CreatePublicationJSONRequestBody = CreatePublicationRequest
+
+// RejectArticleJSONRequestBody defines body for RejectArticle for application/json ContentType.
+type RejectArticleJSONRequestBody = RejectArticleRequest
 
 // IngestUrlJSONRequestBody defines body for IngestUrl for application/json ContentType.
 type IngestUrlJSONRequestBody = IngestUrlRequest
@@ -334,6 +467,24 @@ type ServerInterface interface {
 	// 健康检查（含 DB 连通性）
 	// (GET /healthz)
 	GetHealth(w http.ResponseWriter, r *http.Request)
+	// 文章审阅列表（可按状态、平台、选题过滤）
+	// (GET /v1/articles)
+	ListArticles(w http.ResponseWriter, r *http.Request, params ListArticlesParams)
+	// 文章详情（原稿、版本链、最新评分和发布记录）
+	// (GET /v1/articles/{articleId})
+	GetArticle(w http.ResponseWriter, r *http.Request, articleId ArticleId)
+	// 人工终审通过（pending_review → approved）
+	// (POST /v1/articles/{articleId}/approve)
+	ApproveArticle(w http.ResponseWriter, r *http.Request, articleId ArticleId)
+	// 文章评分历史（倒序）
+	// (GET /v1/articles/{articleId}/evaluations)
+	ListArticleEvaluations(w http.ResponseWriter, r *http.Request, articleId ArticleId)
+	// 登记一次人工发布；首次登记同时执行 approved → published
+	// (POST /v1/articles/{articleId}/publications)
+	CreatePublication(w http.ResponseWriter, r *http.Request, articleId ArticleId)
+	// 人工终审拒绝（pending_review → rejected）
+	// (POST /v1/articles/{articleId}/reject)
+	RejectArticle(w http.ResponseWriter, r *http.Request, articleId ArticleId)
 	// 手动投喂 URL（刷到好东西时的一键入口，SPEC-003 §2.2）
 	// (POST /v1/ingest/url)
 	IngestUrl(w http.ResponseWriter, r *http.Request)
@@ -391,6 +542,42 @@ type Unimplemented struct{}
 // 健康检查（含 DB 连通性）
 // (GET /healthz)
 func (_ Unimplemented) GetHealth(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 文章审阅列表（可按状态、平台、选题过滤）
+// (GET /v1/articles)
+func (_ Unimplemented) ListArticles(w http.ResponseWriter, r *http.Request, params ListArticlesParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 文章详情（原稿、版本链、最新评分和发布记录）
+// (GET /v1/articles/{articleId})
+func (_ Unimplemented) GetArticle(w http.ResponseWriter, r *http.Request, articleId ArticleId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 人工终审通过（pending_review → approved）
+// (POST /v1/articles/{articleId}/approve)
+func (_ Unimplemented) ApproveArticle(w http.ResponseWriter, r *http.Request, articleId ArticleId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 文章评分历史（倒序）
+// (GET /v1/articles/{articleId}/evaluations)
+func (_ Unimplemented) ListArticleEvaluations(w http.ResponseWriter, r *http.Request, articleId ArticleId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 登记一次人工发布；首次登记同时执行 approved → published
+// (POST /v1/articles/{articleId}/publications)
+func (_ Unimplemented) CreatePublication(w http.ResponseWriter, r *http.Request, articleId ArticleId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// 人工终审拒绝（pending_review → rejected）
+// (POST /v1/articles/{articleId}/reject)
+func (_ Unimplemented) RejectArticle(w http.ResponseWriter, r *http.Request, articleId ArticleId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -504,6 +691,190 @@ func (siw *ServerInterfaceWrapper) GetHealth(w http.ResponseWriter, r *http.Requ
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetHealth(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListArticles operation middleware
+func (siw *ServerInterfaceWrapper) ListArticles(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListArticlesParams
+
+	// ------------- Optional query parameter "status" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "status", r.URL.Query(), &params.Status)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "status", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "platform" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "platform", r.URL.Query(), &params.Platform)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "platform", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "topicId" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "topicId", r.URL.Query(), &params.TopicId)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "topicId", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "limit", r.URL.Query(), &params.Limit)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "offset" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "offset", r.URL.Query(), &params.Offset)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "offset", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListArticles(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetArticle operation middleware
+func (siw *ServerInterfaceWrapper) GetArticle(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "articleId" -------------
+	var articleId ArticleId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "articleId", chi.URLParam(r, "articleId"), &articleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "articleId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetArticle(w, r, articleId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ApproveArticle operation middleware
+func (siw *ServerInterfaceWrapper) ApproveArticle(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "articleId" -------------
+	var articleId ArticleId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "articleId", chi.URLParam(r, "articleId"), &articleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "articleId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ApproveArticle(w, r, articleId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListArticleEvaluations operation middleware
+func (siw *ServerInterfaceWrapper) ListArticleEvaluations(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "articleId" -------------
+	var articleId ArticleId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "articleId", chi.URLParam(r, "articleId"), &articleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "articleId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListArticleEvaluations(w, r, articleId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreatePublication operation middleware
+func (siw *ServerInterfaceWrapper) CreatePublication(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "articleId" -------------
+	var articleId ArticleId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "articleId", chi.URLParam(r, "articleId"), &articleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "articleId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreatePublication(w, r, articleId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RejectArticle operation middleware
+func (siw *ServerInterfaceWrapper) RejectArticle(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "articleId" -------------
+	var articleId ArticleId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "articleId", chi.URLParam(r, "articleId"), &articleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "articleId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RejectArticle(w, r, articleId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -984,6 +1355,24 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/healthz", wrapper.GetHealth)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/articles", wrapper.ListArticles)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/articles/{articleId}", wrapper.GetArticle)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/articles/{articleId}/approve", wrapper.ApproveArticle)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/articles/{articleId}/evaluations", wrapper.ListArticleEvaluations)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/articles/{articleId}/publications", wrapper.CreatePublication)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/articles/{articleId}/reject", wrapper.RejectArticle)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/ingest/url", wrapper.IngestUrl)
 	})
 	r.Group(func(r chi.Router) {
@@ -1038,63 +1427,79 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 // Base64 encoded, gzipped, json marshaled Swagger object
 var swaggerSpec = []string{
 
-	"H4sIAAAAAAAC/+RbX1cTybb/Kr36zsO9ayIJqLPu8HQd1Hu5Z5xxAXPOg8NxFZ0iae10x+5q0PFkraD8",
-	"CQqCIwiCojAEmFGDf2YkhiBrnY/ipLo7T/kKZ1VXp9Od7k6i4Oia82RMqnbtvX/7X+1dXGU5KZGURCgi",
-	"he28yiaBDBIQQdn8X6+kyhzsjpLPvMh2skmA4myIFUECsp2sUv05xMrwksrLMMp2IlmFIVbh4jAByL5B",
-	"SU4AxHayqsqTlehK0tyLZF6MsalUiO2TkjwXeAiyfj3IGSmyWUlKogJNub4C0R54SYUKIv/jJBFB0fwI",
-	"kkmB5wDiJTF8QZFE8l3tmM9kOMh2sv8RruksTH9VwqdkWZLpUVGocDKfJETYTtbY3tGeXys/WNFezrOp",
-	"ENsliYMCz/0BJ5fyt/DeHTw5rd94paVH8PgL/ZeRSjGDNyx26PfabyPG3pPf0yPliWk8O13aX9UKs7+n",
-	"R/CNh8b1PbzzAo/c1+e2KsVJwv43EjotqWL0D1Dcb6NaYbaUn8ZPF/H9LdNUrE2EZpcMAYKm7TiwTMpS",
-	"EsqIpzgDMSZA8qHOIEKsoiYSQL7i+xsCcgyiswJAxK5MQjyC9EMjSao7CI0EL3bTPe22OQJZBlfMA3hE",
-	"2Urw4tdQjKG4c5nDM2oWf87aFLJkqkng5bffJiUNXIAcIkdSLXsUxElRf/0koKKAmN9vdWyZFGrr/c4+",
-	"rQpCH7yMepEMEIyZSoeimiDbZUU574Q9xA5CxMXPJ93Eaoz9HwQC0Ve9JNEBJ1npIhtio9Kw6EtDQQCp",
-	"St36/mYAWLtC5Cg/MbvFGFTQd7IQaI6ihEyNuu0cr09oL7cqxUwpXyjtpkuvM8bmJH6zYOzf0x6s4nQR",
-	"v1nA4/eI//nIosqCOwLKPNtMErLHT4L/lwZOcBxMIhj1Mp9QYjRG20fxIvriWO0wXkQwBmVC6JIK1RZs",
-	"hy4LWaT9OLJdyoHVZR5IcUmMKXGVDbE/xHnz32HIxQHyhbsHEnKNI4UMgRW16sCZ3cDjL/Gth3j5UaWY",
-	"0efv6QvzleJU6c0ynr2l7z5lZHVA5jlGe7SKJ8bxzDUjfd0XqpSPeL1cHEZVAcq9ECFejClexmiOPU2c",
-	"oln86a0trRI2ow0R/NQQEFRAza8RjT7nYg+VXk5SUUskzJW1/fWu5BDKRbqe2/5WlHYWWMqpS3+7Y6Xi",
-	"o/L9tLExos291pdGcWZc3x1lQ39WFXtVZbLrE/ZJHJZo+msubld1dSrEQhEMCDQ8WKcNSJIAgUh+NEM3",
-	"qW/42Dso0tqQCrF8tIVirloYNsme1S9aYaOPrKzFUlEVBCJltc70UB6GfCxugpQAl/kECUvtZsqnnyP2",
-	"FlFNDJCIWGf+plimFNZKenSohot9Rk3jbvX2B6Ld5cC2GjJFOKyYBbQCgUx9TkWSzANy6EVJ8A2bXoi8",
-	"0XF6XivMlicmysvj5bFpfS9XKS6TPCAPAeEML6oIKkwpX9B/LhirW/p6QXuxr89t4bEt/Dxd3l00cuse",
-	"bxy0qoVm0HmqCmJA7qPdCEUi/x1xoHQ8FAS0I5ElwOUTMXgSXHHTOvrFcQel9oCd3dWi0d53PBJptk+W",
-	"hBattkdq7PbuKOUtmOAgUAXU/W4q8zLcICLUmX3NkgPODjbqoKqPI1c6TkX8EDwNeEGVLQm8rujgmBTz",
-	"XZJKLy71l7WsVpjVf902cqt4LIsLd7QHq/pyTpt/xoaakBWAguwyu2kMIat7VPEEcoW8KEDwCOLNyNAS",
-	"iV6V46CiHISMCC8fjBPPjcCLSTCy3WJSRR8oQ1lmVsf2ISasTygT2bJG2o6H3jMvuVOSDUEweK1XXk8X",
-	"tNxvnlj/idYhLcL6IcuFAIX3WNmhmtgTAEErjSt8TASNMnmfZYWOqzepCRQlrg6Q4AZE1STEyWBYgHID",
-	"Sn/jUbwWkYEgfDvIdp5rRdFsKlTv6XGbUPPt1qH1dmuR8Nppf7W7+C6toRarUAEgqKBeTpJhfdJ0gxtg",
-	"H1WwQ6wMhkmp0B11t5qaclDfVqq1NZrfHejST6YR1jijUPED+18O/Xl5DtX6Nk7E/GKa/8XMYzkNQ08C",
-	"XO6SRE6VZShyV9xFY0fj2i+wWqqj2Yx1nvYx6sw9BkWS5bt9jbtpCOPMZmu0QY3g2RLlE1BUeEnsMVsr",
-	"lItolCf8AeGsizvvZlc+Kadn9d1fcWFDnx3X556zPgqwTzPhbXiYw1MbRmGfU1oMDRfUaAyekaJQ8BVO",
-	"BpQt//BD+0l/hbLC+zakNq4xZqPgf4bafYNCbZjSPIBICAgtRDCPYoYgkmD0ZFXnPnX05gaeuV3Kp/Xs",
-	"Fm2h6UujFEPmIrxSKWaqMjDa0jVt4RFDSDJ0RaU4VdobpyUDfva8tDdNG2otJtpA1elzD7X5jPbgenli",
-	"Wp/MaPefVIoZuue8ApHSNkR3VoqTJgv7xvYozozjmW28vKLNvWGb3xh9A1dtgOWCtp5frxG7EHLajcvE",
-	"nN4ZGBvczaJ3jGm8+A0c9t5m2yMBhuK4FJHo4E4cSYAQlAkef//Pc5H2/nORI1/2/6PjXOTI0f7/6jwX",
-	"OXKcfvWZn8XWbtUdx5rmlgT8QRLfec5Si7uUdwcltyqCde0ZL3BAjPIkWpJ0RNAk5EEyKUtD5kdePD8s",
-	"84iwE2LJJwRFs19D6MKo32zC7HYMSl4rV7i4JABZOQJ4ppRfwjdWtUd5vH+d6TnV28ecONvN4OxtnXhZ",
-	"5kyEKf+ypa28qhSnyksz5YkpfeumvnZbm/wZP5+vFCd/T1/7XsS5ldLeHX33jrYySkr56flSPl0q3MS5",
-	"Fe0BuS5ri9tMW5ud/asMtNEv2i4oksi8Tc+9Tc8x2v0n2t2J0u6rUv6pvjT6vUjXMNriNh57ZXJnbI7j",
-	"5TeV4nIpv26kx0r5tDHxq5be1OeeM13dTDk9qz3NGhvj+vLdSjFjbI6Udu/gwh2m59SJk2dOMbiY1ube",
-	"lBdy5bXFqgR29WBr5wgBgRzHkmBmxQs20tbeFiEwSkkogiTPdrJH2yJtR8m9BaC4CWmYFps/kM8xaOZD",
-	"4kima5Kwy/4vRFaZWjd07ohEDm1oahfCnlz57V/ooLRa1rF4JIsLO9pPae1htlLM4NnHzMmvGGN/pZxe",
-	"0tKb5lg3FWLDQ+1h3pxgha17TVJSfMSzp1zWQB4q6CspeuXQJPNM0VJuByVxN+XRbMehne+cgfmoF++8",
-	"wGPZ8uJDYibHKKJ+5Gz+wo63Bm5gtMmb+MaWdmMe373GfNfzNQEns4Mzz3B2r5S/b2T3tYVX+tJoKZ8u",
-	"z+XwWBbP/FQpTvWePdV1JBI5yvxzs6OtwwmfQmJ8WFbFYPT6ZD4Wg3Kfc+Lyiajyy+aqtJ9OuBWpP76J",
-	"p18aO6Te0J6sltOT5bVFY2QJz2bMqeq0/nTSeHbdrCyW8f6ePp9lHIHcpUJrpGTKQFKl0sjPveO7D+jy",
-	"3sNa8X5je5eKbuTe6Hs5oupktWnjlue7ZNRx7XGLdPhuHjDEa8nZP4JOD+zrc6+dMFSKmbeT60w7U8r/",
-	"wiCeu8jQ2rRSXDYf4WyX8tPG2mP91jZeu45nFssTM9WM57BVsyUSbKBf8wrqtdaEXA+7zlkPrS6p0LxA",
-	"Wy+tapVPTXueln7/AeFoqYHgaTN5uh0tmD59yIQzC8bqFk18dFBFEyJ9+2Q9avIPlvSFkdW4+kBu4OiB",
-	"t2T77Yd8tJ8mqdzR97L6g0Vy7e4zvLZCgau38/DV6nPDFC16BUhn7W7QTprf26DVmb0fV7UlYfu9o4+Z",
-	"H/OW2t9ITJcFhSn4seaC28/n6oq0zKPyvXUqOLHVnRfUVvWlUUYGw+dNr2FK+w/0+Xvkbro7Zmz+VL63",
-	"buTWyotjlhUHpqnDV0bkkM3Q6erBEfj99Us1a2xvaNfHmufAQ9HXhwoWHydRBgaL98yOB4Uzp829rrnL",
-	"7GM8u41H7pfyt/D0vH7zifUkYe22fmsiMHM6Ikp4sPr6p2Hd3Ot6t3R47vSxau53QuAwinSKi7GdtbFz",
-	"l+c1jMyuWePipo8uaam2sYcAranRNSRJhfxpCnyCRy6S9hD2eMQxg+1o9uoj6ABpcFCBASc06bwdOGa7",
-	"+4N21dZS+UZHbj4TKrOd6SgrA/um5inV9d5GWwvVH70F2tWfNjVJKz5jf0LbXa8UpxzTIAanf8SFmRaK",
-	"wTPmkJTK92GCvM+z9j+4MLTQO9y60KfzgTPLeLdAcao2I6e0uVeV4pL+c0HPrZZH7mgzP+KxLLnXP1il",
-	"u+jwwxspwletPnuq0Y29ity7he7qH6h80EIoUO0Hr36sjohV/QSoLWz1o4OT4Am64N9GhwdLeKVCAe9k",
-	"9dWckVu3jZw2/5m34z8y1fZ/I1MOQ3uk20IqPOVY/NHgaT1BOMbVLV7vD8ML9KVRa6x3axzPvKgUM3To",
-	"iDPjzOcMHTAzn1uv+sPuYeGUI08EIUZnNsFO5PhjhAOCdPi5x+cPJVLeP577czssnVbbDmtP7sIO163O",
-	"5aghECJQHqpiaE5P2DBI8myqP/WvAAAA//8jUL2/YDkAAA==",
+	"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",
+	"VU/oMJNi6aHeof8PAAD//+um7/7lVgAA",
 }
 
 // GetSwagger returns the content of the embedded swagger specification file
