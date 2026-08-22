@@ -361,6 +361,12 @@ func (h *Server) UpdateSchedulerSettings(w http.ResponseWriter, r *http.Request)
 		current.TopicEvaluate.Enabled = patch.TopicEvaluate.Enabled
 		current.TopicEvaluate.MaxConcurrency = patch.TopicEvaluate.MaxConcurrency
 	}
+	if patch.ArticleWrite != nil {
+		current.ArticleWrite.Enabled = patch.ArticleWrite.Enabled
+		current.ArticleWrite.Times = patch.ArticleWrite.Times
+		current.ArticleWrite.Timezone = patch.ArticleWrite.Timezone
+		current.ArticleWrite.MaxTopics = patch.ArticleWrite.MaxTopics
+	}
 	if patch.MemoryReflect != nil {
 		current.MemoryReflect.Enabled = patch.MemoryReflect.Enabled
 		current.MemoryReflect.Weekday = patch.MemoryReflect.Weekday
@@ -413,6 +419,15 @@ func validateSettings(s scheduler.Settings) error {
 	if s.TopicEvaluate.MaxConcurrency < 1 || s.TopicEvaluate.MaxConcurrency > 32 {
 		return errors.New("topicEvaluate.maxConcurrency must be 1..32")
 	}
+	if err := validateDailyTimes("articleWrite.times", s.ArticleWrite.Times); err != nil {
+		return err
+	}
+	if _, err := time.LoadLocation(s.ArticleWrite.Timezone); err != nil {
+		return fmt.Errorf("unknown articleWrite timezone %q", s.ArticleWrite.Timezone)
+	}
+	if s.ArticleWrite.MaxTopics < 1 || s.ArticleWrite.MaxTopics > 20 {
+		return errors.New("articleWrite.maxTopics must be 1..20")
+	}
 	if s.MemoryReflect.Weekday < 1 || s.MemoryReflect.Weekday > 7 {
 		return errors.New("memoryReflect.weekday must be 1..7")
 	}
@@ -425,6 +440,24 @@ func validateSettings(s scheduler.Settings) error {
 	}
 	if s.MemoryReflect.LookbackDays < 1 || s.MemoryReflect.LookbackDays > 90 {
 		return errors.New("memoryReflect.lookbackDays must be 1..90")
+	}
+	return nil
+}
+
+func validateDailyTimes(field string, times []string) error {
+	if len(times) == 0 || len(times) > 24 {
+		return fmt.Errorf("%s must have 1..24 entries", field)
+	}
+	seen := map[string]bool{}
+	for _, value := range times {
+		var hh, mm int
+		if _, err := fmt.Sscanf(value, "%02d:%02d", &hh, &mm); err != nil || hh > 23 || mm > 59 || len(value) != 5 {
+			return fmt.Errorf("bad %s value %q (want HH:MM)", field, value)
+		}
+		if seen[value] {
+			return fmt.Errorf("duplicate %s value %q", field, value)
+		}
+		seen[value] = true
 	}
 	return nil
 }

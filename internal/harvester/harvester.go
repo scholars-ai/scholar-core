@@ -89,6 +89,8 @@ func (h *Harvester) Tick(ctx context.Context) {
 	h.transitionArticleEvaluations(ctx)
 	h.decideScoredArticles(ctx)
 	h.transitionWritten(ctx)
+	h.syncWorkflowArtifacts(ctx)
+	h.finishWorkflowRuns(ctx)
 }
 
 // enqueueWriting：按平台分派 approved Topic。所有入队与 approved→in_writing 审计同事务。
@@ -560,8 +562,132 @@ func (h *Harvester) transitionScored(ctx context.Context) {
 			continue
 		}
 		telemetry.RecordTransition(transitionCtx, string(dbgen.TopicStatusCandidate), string(to), "harvester")
+		if to == dbgen.TopicStatusScored && row.CorrelationID.Valid && h.isCascadeRun(transitionCtx, row.CorrelationID.UUID) {
+			if err := h.autoApproveCascadeTopic(transitionCtx, row.ID, row.CorrelationID.UUID, row.TotalScore); err != nil {
+				h.log.Error("cascade topic approval failed", "topic", row.ID, "error", err)
+			}
+		}
 		transitionSpan.End()
 		h.log.Info("topic transitioned", "topic", row.ID, "to", to, "score", score)
+	}
+}
+
+func (h *Harvester) isCascadeRun(ctx context.Context, runID uuid.UUID) bool {
+	run, err := h.q.GetWorkflowRun(ctx, runID)
+	return err == nil && run.Mode == "cascade"
+}
+
+func (h *Harvester) autoApproveCascadeTopic(
+	ctx context.Context, topicID uuid.UUID, correlationID uuid.UUID, score pgtype.Numeric,
+) error {
+	if !pipeline.CanTopicTransition(dbgen.TopicStatusScored, dbgen.TopicStatusApproved) {
+		return pipeline.ErrInvalidTransition("topic", "scored", "approved")
+	}
+	row, err := h.q.TransitionTopic(ctx, dbgen.TransitionTopicParams{
+		TopicID: topicID, FromStatus: dbgen.TopicStatusScored, ToStatus: dbgen.TopicStatusApproved,
+		Score: score, ActorType: "system", TriggerType: "harvester",
+		Reason:        pgtype.Text{String: "cascade workflow auto-approved scored topic", Valid: true},
+		CorrelationID: uuid.NullUUID{UUID: correlationID, Valid: true},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(map[string]any{"topicId": topicID, "score": row.LatestScore})
+	if err != nil {
+		return err
+	}
+	_, err = h.q.CreateWorkflowEvent(ctx, dbgen.CreateWorkflowEventParams{
+		RunID: correlationID, NodeKey: "topic_evaluate", EventType: "succeeded", Status: "succeeded",
+		Message: "Topic 评分通过，已自动进入写作", Payload: payload,
+	})
+	return err
+}
+
+func (h *Harvester) finishWorkflowRuns(ctx context.Context) {
+	runs, err := h.q.ListWorkflowRuns(ctx, 50)
+	if err != nil {
+		h.log.Error("workflow run listing failed", "error", err)
+		return
+	}
+	for _, run := range runs {
+		if run.Status != "queued" && run.Status != "running" {
+			continue
+		}
+		failed, err := h.q.WorkflowRunHasFailedEvent(ctx, run.ID)
+		if err == nil && failed {
+			message := "工作流包含失败任务，请检查 Agent 配置后重试"
+			if _, finishErr := h.q.FinishWorkflowRun(ctx, dbgen.FinishWorkflowRunParams{
+				ID: run.ID, Status: "failed", ErrorMessage: pgtype.Text{String: message, Valid: true},
+			}); finishErr != nil {
+				h.log.Warn("workflow run failure completion failed", "run_id", run.ID, "error", finishErr)
+				continue
+			}
+			payload, _ := json.Marshal(map[string]any{"runId": run.ID})
+			_, _ = h.q.CreateWorkflowEvent(ctx, dbgen.CreateWorkflowEventParams{
+				RunID: run.ID, NodeKey: "human_review", EventType: "failed", Status: "failed",
+				Message: message, Payload: payload,
+			})
+			continue
+		}
+		ready, err := h.q.WorkflowRunReadyToFinish(ctx, uuid.NullUUID{UUID: run.ID, Valid: true})
+		if err != nil || !ready.Valid || !ready.Bool {
+			continue
+		}
+		if _, err := h.q.MarkWorkflowRunSucceeded(ctx, run.ID); err != nil {
+			h.log.Warn("workflow run completion failed", "run_id", run.ID, "error", err)
+			continue
+		}
+		payload, _ := json.Marshal(map[string]any{"runId": run.ID})
+		_, _ = h.q.CreateWorkflowEvent(ctx, dbgen.CreateWorkflowEventParams{
+			RunID: run.ID, NodeKey: "human_review", EventType: "succeeded", Status: "succeeded",
+			Message: "文章已进入人工审阅工作台", Payload: payload,
+		})
+	}
+}
+
+func (h *Harvester) syncWorkflowArtifacts(ctx context.Context) {
+	runs, err := h.q.ListWorkflowRuns(ctx, 50)
+	if err != nil {
+		h.log.Error("workflow artifact runs listing failed", "error", err)
+		return
+	}
+	for _, run := range runs {
+		if run.Status == "succeeded" || run.Status == "failed" {
+			continue
+		}
+		rawItems, err := h.q.ListWorkflowRawItems(ctx, uuid.NullUUID{UUID: run.ID, Valid: true})
+		if err != nil {
+			continue
+		}
+		for _, item := range rawItems {
+			_, _ = h.q.CreateWorkflowArtifact(ctx, dbgen.CreateWorkflowArtifactParams{
+				RunID: run.ID, NodeKey: "source_fetch", ArtifactType: "raw_item", ArtifactID: item.ID,
+				Title: item.Title, Metadata: []byte(`{"href":"/sources"}`),
+			})
+		}
+		topics, err := h.q.ListWorkflowTopics(ctx, uuid.NullUUID{UUID: run.ID, Valid: true})
+		if err != nil {
+			continue
+		}
+		for _, topic := range topics {
+			_, _ = h.q.CreateWorkflowArtifact(ctx, dbgen.CreateWorkflowArtifactParams{
+				RunID: run.ID, NodeKey: "topic_scout", ArtifactType: "topic", ArtifactID: topic.ID,
+				Title: topic.Title, Metadata: []byte(`{"href":"/topics"}`),
+			})
+		}
+		articles, err := h.q.ListWorkflowArticles(ctx, uuid.NullUUID{UUID: run.ID, Valid: true})
+		if err != nil {
+			continue
+		}
+		for _, article := range articles {
+			_, _ = h.q.CreateWorkflowArtifact(ctx, dbgen.CreateWorkflowArtifactParams{
+				RunID: run.ID, NodeKey: "article_write", ArtifactType: "article", ArtifactID: article.ID,
+				Title: article.Title, Metadata: []byte(`{"href":"/articles"}`),
+			})
+		}
 	}
 }
 

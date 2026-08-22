@@ -74,10 +74,16 @@ func run(log *slog.Logger) error {
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(30 * time.Second))
 	r.Use(otelhttp.NewMiddleware("scholar-core.http"))
 	r.Use(telemetry.HTTPMiddleware)
-	r.Mount("/api", api.Handler(api.NewServer(pool, log)))
+	apiHandler := api.Handler(api.NewServer(pool, log))
+	r.Mount("/api", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if api.IsWorkflowStreamPath(req.URL.Path) {
+			apiHandler.ServeHTTP(w, req)
+			return
+		}
+		http.TimeoutHandler(apiHandler, 30*time.Second, `{"code":"timeout","message":"request timed out"}`).ServeHTTP(w, req)
+	}))
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,

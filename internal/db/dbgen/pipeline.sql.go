@@ -170,6 +170,60 @@ func (q *Queries) GetManualSource(ctx context.Context) (uuid.UUID, error) {
 	return id, err
 }
 
+const getPipelineCounts = `-- name: GetPipelineCounts :one
+select
+    (select count(*) from raw_items) as raw_total,
+    (select count(*) from raw_items where status = 'new') as raw_new,
+    (select count(*) from raw_items where status = 'clustered') as raw_clustered,
+    (select count(*) from raw_items where status = 'discarded') as raw_discarded,
+    (select count(*) from topics) as topic_total,
+    (select count(*) from topics where status = 'scored') as topic_scored,
+    (select count(*) from topics where status in ('approved', 'in_writing', 'written')) as topic_passed,
+    (select count(*) from topics where status = 'rejected') as topic_rejected,
+    (select count(*) from articles) as article_total,
+    (select count(*) from articles where status in ('pending_review', 'approved')) as article_ready,
+    (select count(*) from articles where status in ('approved', 'published')) as article_passed,
+    (select count(*) from articles where status = 'rejected') as article_rejected,
+    (select count(*) from articles where status = 'rewrite_queued' or version > 1) as article_rewrites
+`
+
+type GetPipelineCountsRow struct {
+	RawTotal        int64 `json:"raw_total"`
+	RawNew          int64 `json:"raw_new"`
+	RawClustered    int64 `json:"raw_clustered"`
+	RawDiscarded    int64 `json:"raw_discarded"`
+	TopicTotal      int64 `json:"topic_total"`
+	TopicScored     int64 `json:"topic_scored"`
+	TopicPassed     int64 `json:"topic_passed"`
+	TopicRejected   int64 `json:"topic_rejected"`
+	ArticleTotal    int64 `json:"article_total"`
+	ArticleReady    int64 `json:"article_ready"`
+	ArticlePassed   int64 `json:"article_passed"`
+	ArticleRejected int64 `json:"article_rejected"`
+	ArticleRewrites int64 `json:"article_rewrites"`
+}
+
+func (q *Queries) GetPipelineCounts(ctx context.Context) (GetPipelineCountsRow, error) {
+	row := q.db.QueryRow(ctx, getPipelineCounts)
+	var i GetPipelineCountsRow
+	err := row.Scan(
+		&i.RawTotal,
+		&i.RawNew,
+		&i.RawClustered,
+		&i.RawDiscarded,
+		&i.TopicTotal,
+		&i.TopicScored,
+		&i.TopicPassed,
+		&i.TopicRejected,
+		&i.ArticleTotal,
+		&i.ArticleReady,
+		&i.ArticlePassed,
+		&i.ArticleRejected,
+		&i.ArticleRewrites,
+	)
+	return i, err
+}
+
 const inWritingTopicsReady = `-- name: InWritingTopicsReady :many
 select t.id, t.correlation_id
 from topics t
@@ -203,6 +257,64 @@ func (q *Queries) InWritingTopicsReady(ctx context.Context, limit int32) ([]InWr
 	for rows.Next() {
 		var i InWritingTopicsReadyRow
 		if err := rows.Scan(&i.ID, &i.CorrelationID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lastPipelineScheduleRuns = `-- name: LastPipelineScheduleRuns :many
+select distinct on (stage_key)
+    id, schedule_key, planned_at, enqueued_at, queue, msg_id, note, stage_key
+from (
+    select schedule_runs.id, schedule_runs.schedule_key, schedule_runs.planned_at, schedule_runs.enqueued_at, schedule_runs.queue, schedule_runs.msg_id, schedule_runs.note,
+           (case
+               when schedule_key like 'source_fetch:%' then 'source_fetch'
+               when schedule_key = 'topic_scout' then 'topic_scout'
+               when schedule_key = 'article_write_batch' then 'article_write'
+           end)::text as stage_key
+    from schedule_runs
+    where schedule_key like 'source_fetch:%'
+       or schedule_key in ('topic_scout', 'article_write_batch')
+) runs
+where stage_key is not null
+order by stage_key, planned_at desc
+`
+
+type LastPipelineScheduleRunsRow struct {
+	ID          uuid.UUID          `json:"id"`
+	ScheduleKey string             `json:"schedule_key"`
+	PlannedAt   pgtype.Timestamptz `json:"planned_at"`
+	EnqueuedAt  pgtype.Timestamptz `json:"enqueued_at"`
+	Queue       string             `json:"queue"`
+	MsgID       pgtype.Int8        `json:"msg_id"`
+	Note        pgtype.Text        `json:"note"`
+	StageKey    string             `json:"stage_key"`
+}
+
+func (q *Queries) LastPipelineScheduleRuns(ctx context.Context) ([]LastPipelineScheduleRunsRow, error) {
+	rows, err := q.db.Query(ctx, lastPipelineScheduleRuns)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LastPipelineScheduleRunsRow
+	for rows.Next() {
+		var i LastPipelineScheduleRunsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ScheduleKey,
+			&i.PlannedAt,
+			&i.EnqueuedAt,
+			&i.Queue,
+			&i.MsgID,
+			&i.Note,
+			&i.StageKey,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -368,6 +480,50 @@ func (q *Queries) PendingCandidates(ctx context.Context, limit int32) ([]Pending
 	return items, nil
 }
 
+const recentPipelineFailures = `-- name: RecentPipelineFailures :many
+select id, queue, error_type, error_message, retryable, created_at
+from job_failures
+where archived = false
+order by created_at desc
+limit $1
+`
+
+type RecentPipelineFailuresRow struct {
+	ID           uuid.UUID          `json:"id"`
+	Queue        string             `json:"queue"`
+	ErrorType    string             `json:"error_type"`
+	ErrorMessage string             `json:"error_message"`
+	Retryable    bool               `json:"retryable"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) RecentPipelineFailures(ctx context.Context, limit int32) ([]RecentPipelineFailuresRow, error) {
+	rows, err := q.db.Query(ctx, recentPipelineFailures, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RecentPipelineFailuresRow
+	for rows.Next() {
+		var i RecentPipelineFailuresRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Queue,
+			&i.ErrorType,
+			&i.ErrorMessage,
+			&i.Retryable,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const scoredArticlesWithoutDecision = `-- name: ScoredArticlesWithoutDecision :many
 select a.id, a.topic_id, a.platform, a.version, t.correlation_id,
        e.id as evaluation_id, e.total_score, e.passed, e.pass_threshold,
@@ -428,6 +584,41 @@ func (q *Queries) ScoredArticlesWithoutDecision(ctx context.Context, limit int32
 			&i.DimensionReasons,
 			&i.VetoedDimension,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const scoredTopicsForScheduledWriting = `-- name: ScoredTopicsForScheduledWriting :many
+select id, correlation_id
+from topics
+where status = 'scored'
+order by latest_score desc nulls last, updated_at desc, id
+limit $1
+`
+
+type ScoredTopicsForScheduledWritingRow struct {
+	ID            uuid.UUID     `json:"id"`
+	CorrelationID uuid.NullUUID `json:"correlation_id"`
+}
+
+// M2.1：固定节奏自动选择最高分 Topic，Core 随后执行 scored → approved。
+// 只返回仍处于 scored 的 Topic，避免重复自动批准。
+func (q *Queries) ScoredTopicsForScheduledWriting(ctx context.Context, limit int32) ([]ScoredTopicsForScheduledWritingRow, error) {
+	rows, err := q.db.Query(ctx, scoredTopicsForScheduledWriting, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ScoredTopicsForScheduledWritingRow
+	for rows.Next() {
+		var i ScoredTopicsForScheduledWritingRow
+		if err := rows.Scan(&i.ID, &i.CorrelationID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

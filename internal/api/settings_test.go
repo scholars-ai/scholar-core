@@ -28,6 +28,12 @@ func TestValidateSettings(t *testing.T) {
 		{"negative minNewItems", func(s *scheduler.Settings) { s.TopicScout.MinNewItems = -1 }},
 		{"zero concurrency", func(s *scheduler.Settings) { s.TopicEvaluate.MaxConcurrency = 0 }},
 		{"excess concurrency", func(s *scheduler.Settings) { s.TopicEvaluate.MaxConcurrency = 33 }},
+		{"no article write times", func(s *scheduler.Settings) { s.ArticleWrite.Times = nil }},
+		{"bad article write time", func(s *scheduler.Settings) { s.ArticleWrite.Times = []string{"8:00"} }},
+		{"duplicate article write times", func(s *scheduler.Settings) { s.ArticleWrite.Times = []string{"08:00", "08:00"} }},
+		{"unknown article write timezone", func(s *scheduler.Settings) { s.ArticleWrite.Timezone = "Mars/Olympus" }},
+		{"zero article write topics", func(s *scheduler.Settings) { s.ArticleWrite.MaxTopics = 0 }},
+		{"excess article write topics", func(s *scheduler.Settings) { s.ArticleWrite.MaxTopics = 21 }},
 	}
 	for _, tc := range cases {
 		s := valid()

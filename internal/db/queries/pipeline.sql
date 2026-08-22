@@ -28,6 +28,55 @@ where status = 'approved'
 order by updated_at, id
 limit $1;
 
+-- M2.1：固定节奏自动选择最高分 Topic，Core 随后执行 scored → approved。
+-- 只返回仍处于 scored 的 Topic，避免重复自动批准。
+-- name: ScoredTopicsForScheduledWriting :many
+select id, correlation_id
+from topics
+where status = 'scored'
+order by latest_score desc nulls last, updated_at desc, id
+limit $1;
+
+-- name: GetPipelineCounts :one
+select
+    (select count(*) from raw_items) as raw_total,
+    (select count(*) from raw_items where status = 'new') as raw_new,
+    (select count(*) from raw_items where status = 'clustered') as raw_clustered,
+    (select count(*) from raw_items where status = 'discarded') as raw_discarded,
+    (select count(*) from topics) as topic_total,
+    (select count(*) from topics where status = 'scored') as topic_scored,
+    (select count(*) from topics where status in ('approved', 'in_writing', 'written')) as topic_passed,
+    (select count(*) from topics where status = 'rejected') as topic_rejected,
+    (select count(*) from articles) as article_total,
+    (select count(*) from articles where status in ('pending_review', 'approved')) as article_ready,
+    (select count(*) from articles where status in ('approved', 'published')) as article_passed,
+    (select count(*) from articles where status = 'rejected') as article_rejected,
+    (select count(*) from articles where status = 'rewrite_queued' or version > 1) as article_rewrites;
+
+-- name: LastPipelineScheduleRuns :many
+select distinct on (stage_key)
+    id, schedule_key, planned_at, enqueued_at, queue, msg_id, note, stage_key
+from (
+    select schedule_runs.*,
+           (case
+               when schedule_key like 'source_fetch:%' then 'source_fetch'
+               when schedule_key = 'topic_scout' then 'topic_scout'
+               when schedule_key = 'article_write_batch' then 'article_write'
+           end)::text as stage_key
+    from schedule_runs
+    where schedule_key like 'source_fetch:%'
+       or schedule_key in ('topic_scout', 'article_write_batch')
+) runs
+where stage_key is not null
+order by stage_key, planned_at desc;
+
+-- name: RecentPipelineFailures :many
+select id, queue, error_type, error_message, retryable, created_at
+from job_failures
+where archived = false
+order by created_at desc
+limit $1;
+
 -- name: DraftArticlesPendingEvaluation :many
 -- M2 harvester：Article 已由 agents 写回，但尚未投递独立评分任务。
 -- schedule_runs 负责最终防重；这里保持查询简单，便于故障后重新扫描。

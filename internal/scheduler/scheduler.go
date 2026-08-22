@@ -23,6 +23,7 @@ import (
 	"go.opentelemetry.io/otel"
 
 	"github.com/scholars-ai/scholar-core/internal/db/dbgen"
+	"github.com/scholars-ai/scholar-core/internal/pipeline"
 	"github.com/scholars-ai/scholar-core/internal/queue"
 	"github.com/scholars-ai/scholar-core/internal/telemetry"
 )
@@ -43,6 +44,12 @@ type Settings struct {
 		Enabled        bool `json:"enabled"`
 		MaxConcurrency int  `json:"maxConcurrency"`
 	} `json:"topicEvaluate"`
+	ArticleWrite struct {
+		Enabled   bool     `json:"enabled"`
+		Times     []string `json:"times"`
+		Timezone  string   `json:"timezone"`
+		MaxTopics int      `json:"maxTopics"`
+	} `json:"articleWrite"`
 	MemoryReflect struct {
 		Enabled      bool   `json:"enabled"`
 		Weekday      int    `json:"weekday"`
@@ -58,13 +65,17 @@ const scheduledScoutMaxItems = 20
 func DefaultSettings() Settings {
 	var s Settings
 	s.SourceFetch.Enabled = true
-	s.SourceFetch.DefaultIntervalMinutes = 60
+	s.SourceFetch.DefaultIntervalMinutes = 120
 	s.TopicScout.Enabled = true
-	s.TopicScout.Times = []string{"08:00", "20:00"}
+	s.TopicScout.Times = []string{"00:00", "04:00", "08:00", "12:00", "16:00", "20:00"}
 	s.TopicScout.Timezone = "Asia/Shanghai"
 	s.TopicScout.MinNewItems = 5
 	s.TopicEvaluate.Enabled = true
 	s.TopicEvaluate.MaxConcurrency = 2
+	s.ArticleWrite.Enabled = true
+	s.ArticleWrite.Times = []string{"00:00", "08:00", "16:00"}
+	s.ArticleWrite.Timezone = "Asia/Shanghai"
+	s.ArticleWrite.MaxTopics = 3
 	s.MemoryReflect.Enabled = true
 	s.MemoryReflect.Weekday = 1
 	s.MemoryReflect.Time = "09:00"
@@ -137,10 +148,82 @@ func (s *Scheduler) Tick(ctx context.Context) (err error) {
 	if settings.TopicScout.Enabled {
 		s.tickTopicScout(ctx, settings)
 	}
+	if settings.ArticleWrite.Enabled {
+		s.tickArticleWrite(ctx, settings)
+	}
 	if settings.MemoryReflect.Enabled {
 		s.tickMemoryReflect(ctx, settings)
 	}
 	return nil
+}
+
+func (s *Scheduler) tickArticleWrite(ctx context.Context, settings Settings) {
+	loc, err := time.LoadLocation(settings.ArticleWrite.Timezone)
+	if err != nil {
+		s.log.Warn("bad article write timezone, skipping", "tz", settings.ArticleWrite.Timezone)
+		return
+	}
+	local := s.now().In(loc)
+	if !containsTime(settings.ArticleWrite.Times, local.Format("15:04")) {
+		return
+	}
+	limit := settings.ArticleWrite.MaxTopics
+	if limit < 1 {
+		return
+	}
+	if err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		qtx := s.q.WithTx(tx)
+		topics, err := qtx.ScoredTopicsForScheduledWriting(ctx, int32(limit))
+		if err != nil {
+			return err
+		}
+		if len(topics) == 0 {
+			return nil
+		}
+		planned := local.Truncate(time.Minute).UTC()
+		runID, err := qtx.RecordScheduleRun(ctx, dbgen.RecordScheduleRunParams{
+			ScheduleKey: "article_write_batch",
+			PlannedAt:   pgtype.Timestamptz{Time: planned, Valid: true},
+			Queue:       string(queue.ArticleWrite),
+			Note:        pgtype.Text{String: fmt.Sprintf("auto-approved %d topics", len(topics)), Valid: true},
+		})
+		if isNoRows(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		for _, topic := range topics {
+			if !pipeline.CanTopicTransition(dbgen.TopicStatusScored, dbgen.TopicStatusApproved) {
+				return pipeline.ErrInvalidTransition("topic", "scored", "approved")
+			}
+			_, err := qtx.TransitionTopic(ctx, dbgen.TransitionTopicParams{
+				TopicID: topic.ID, FromStatus: dbgen.TopicStatusScored,
+				ToStatus: dbgen.TopicStatusApproved, ActorType: "system", TriggerType: "scheduler",
+				TriggerID:     pgtype.Text{String: fmt.Sprintf("schedule:%d", runID), Valid: true},
+				Reason:        pgtype.Text{String: "scheduled article generation", Valid: true},
+				CorrelationID: topic.CorrelationID,
+			})
+			if isNoRows(err) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		s.log.Error("scheduled article approval failed", "error", err)
+	}
+}
+
+func containsTime(times []string, target string) bool {
+	for _, value := range times {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Scheduler) loadSettings(ctx context.Context) (Settings, error) {

@@ -796,3 +796,40 @@ type WeightSet struct {
 	Note      string             `json:"note"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
+
+type WorkflowArtifact struct {
+	ID           uuid.UUID          `json:"id"`
+	RunID        uuid.UUID          `json:"run_id"`
+	NodeKey      string             `json:"node_key"`
+	ArtifactType string             `json:"artifact_type"`
+	ArtifactID   uuid.UUID          `json:"artifact_id"`
+	Title        string             `json:"title"`
+	Metadata     []byte             `json:"metadata"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
+type WorkflowEvent struct {
+	ID         uuid.UUID          `json:"id"`
+	RunID      uuid.UUID          `json:"run_id"`
+	Sequence   pgtype.Int8        `json:"sequence"`
+	NodeKey    string             `json:"node_key"`
+	EventType  string             `json:"event_type"`
+	Status     string             `json:"status"`
+	Message    string             `json:"message"`
+	AgentRunID uuid.NullUUID      `json:"agent_run_id"`
+	Payload    []byte             `json:"payload"`
+	OccurredAt pgtype.Timestamptz `json:"occurred_at"`
+}
+
+type WorkflowRun struct {
+	ID            uuid.UUID          `json:"id"`
+	CorrelationID uuid.UUID          `json:"correlation_id"`
+	Mode          string             `json:"mode"`
+	StartNode     string             `json:"start_node"`
+	Status        string             `json:"status"`
+	ErrorMessage  pgtype.Text        `json:"error_message"`
+	Metadata      []byte             `json:"metadata"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	StartedAt     pgtype.Timestamptz `json:"started_at"`
+	CompletedAt   pgtype.Timestamptz `json:"completed_at"`
+}
