@@ -574,7 +574,7 @@ func (h *Harvester) transitionScored(ctx context.Context) {
 
 func (h *Harvester) isCascadeRun(ctx context.Context, runID uuid.UUID) bool {
 	run, err := h.q.GetWorkflowRun(ctx, runID)
-	return err == nil && run.Mode == "cascade"
+	return err == nil && run.Mode == "cascade" && (run.Status == "queued" || run.Status == "running")
 }
 
 func (h *Harvester) autoApproveCascadeTopic(
