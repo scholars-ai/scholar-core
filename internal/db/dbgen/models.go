@@ -570,6 +570,7 @@ type Article struct {
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 	PreviousArticleID uuid.NullUUID      `json:"previous_article_id"`
+	CorrelationID     uuid.NullUUID      `json:"correlation_id"`
 }
 
 type ArticleEvaluation struct {

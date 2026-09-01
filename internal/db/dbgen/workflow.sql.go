@@ -15,7 +15,7 @@ import (
 const createWorkflowArtifact = `-- name: CreateWorkflowArtifact :one
 insert into workflow_artifacts (run_id, node_key, artifact_type, artifact_id, title, metadata)
 values ($1, $2, $3, $4, $5, $6)
-on conflict (run_id, artifact_type, artifact_id) do update
+on conflict (run_id, node_key, artifact_type, artifact_id) do update
 set title = excluded.title, metadata = excluded.metadata
 returning id, run_id, node_key, artifact_type, artifact_id, title, metadata, created_at, parent_artifact_id, snapshot_id
 `

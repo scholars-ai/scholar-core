@@ -720,7 +720,7 @@ with transitioned as (
         latest_score = coalesce($2, latest_score),
         updated_at = now()
     where articles.id = $3 and articles.status = $4
-    returning articles.id, articles.topic_id, articles.platform, articles.version, articles.format, articles.title, articles.content_md, articles.assets, articles.writer_agent, articles.status, articles.latest_score, articles.created_at, articles.updated_at, articles.previous_article_id
+    returning articles.id, articles.topic_id, articles.platform, articles.version, articles.format, articles.title, articles.content_md, articles.assets, articles.writer_agent, articles.status, articles.latest_score, articles.created_at, articles.updated_at, articles.previous_article_id, articles.correlation_id
 ), audited as (
     insert into state_transition_events (
         entity_type, entity_id, from_status, to_status,
@@ -734,7 +734,7 @@ with transitioned as (
            coalesce($11::jsonb, '{}'::jsonb)
     from transitioned
 )
-select id, topic_id, platform, version, format, title, content_md, assets, writer_agent, status, latest_score, created_at, updated_at, previous_article_id from transitioned
+select id, topic_id, platform, version, format, title, content_md, assets, writer_agent, status, latest_score, created_at, updated_at, previous_article_id, correlation_id from transitioned
 `
 
 type TransitionArticleParams struct {
@@ -766,6 +766,7 @@ type TransitionArticleRow struct {
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 	PreviousArticleID uuid.NullUUID      `json:"previous_article_id"`
+	CorrelationID     uuid.NullUUID      `json:"correlation_id"`
 }
 
 // Article 状态机唯一写入口：CAS 更新与审计事件同一 SQL 完成。
@@ -799,6 +800,7 @@ func (q *Queries) TransitionArticle(ctx context.Context, arg TransitionArticlePa
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PreviousArticleID,
+		&i.CorrelationID,
 	)
 	return i, err
 }

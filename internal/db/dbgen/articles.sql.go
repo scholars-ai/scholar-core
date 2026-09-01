@@ -81,7 +81,7 @@ func (q *Queries) CreatePublication(ctx context.Context, arg CreatePublicationPa
 }
 
 const getArticle = `-- name: GetArticle :one
-select id, topic_id, platform, version, format, title, content_md, assets, writer_agent, status, latest_score, created_at, updated_at, previous_article_id from articles where id = $1
+select id, topic_id, platform, version, format, title, content_md, assets, writer_agent, status, latest_score, created_at, updated_at, previous_article_id, correlation_id from articles where id = $1
 `
 
 func (q *Queries) GetArticle(ctx context.Context, id uuid.UUID) (Article, error) {
@@ -102,12 +102,13 @@ func (q *Queries) GetArticle(ctx context.Context, id uuid.UUID) (Article, error)
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PreviousArticleID,
+		&i.CorrelationID,
 	)
 	return i, err
 }
 
 const getArticleForUpdate = `-- name: GetArticleForUpdate :one
-select id, topic_id, platform, version, format, title, content_md, assets, writer_agent, status, latest_score, created_at, updated_at, previous_article_id from articles where id = $1 for update
+select id, topic_id, platform, version, format, title, content_md, assets, writer_agent, status, latest_score, created_at, updated_at, previous_article_id, correlation_id from articles where id = $1 for update
 `
 
 func (q *Queries) GetArticleForUpdate(ctx context.Context, id uuid.UUID) (Article, error) {
@@ -128,6 +129,7 @@ func (q *Queries) GetArticleForUpdate(ctx context.Context, id uuid.UUID) (Articl
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PreviousArticleID,
+		&i.CorrelationID,
 	)
 	return i, err
 }
@@ -279,7 +281,7 @@ func (q *Queries) ListArticlePublications(ctx context.Context, articleID uuid.UU
 }
 
 const listArticleVersions = `-- name: ListArticleVersions :many
-select id, topic_id, platform, version, format, title, content_md, assets, writer_agent, status, latest_score, created_at, updated_at, previous_article_id from articles
+select id, topic_id, platform, version, format, title, content_md, assets, writer_agent, status, latest_score, created_at, updated_at, previous_article_id, correlation_id from articles
 where topic_id = $1 and platform = $2
 order by version desc, created_at desc
 `
@@ -313,6 +315,7 @@ func (q *Queries) ListArticleVersions(ctx context.Context, arg ListArticleVersio
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.PreviousArticleID,
+			&i.CorrelationID,
 		); err != nil {
 			return nil, err
 		}
@@ -325,7 +328,7 @@ func (q *Queries) ListArticleVersions(ctx context.Context, arg ListArticleVersio
 }
 
 const listArticles = `-- name: ListArticles :many
-select a.id, a.topic_id, a.platform, a.version, a.format, a.title, a.content_md, a.assets, a.writer_agent, a.status, a.latest_score, a.created_at, a.updated_at, a.previous_article_id, t.title as topic_title,
+select a.id, a.topic_id, a.platform, a.version, a.format, a.title, a.content_md, a.assets, a.writer_agent, a.status, a.latest_score, a.created_at, a.updated_at, a.previous_article_id, a.correlation_id, t.title as topic_title,
        (select count(*) from publications p where p.article_id = a.id) as publication_count
 from articles a
 join topics t on t.id = a.topic_id
@@ -359,6 +362,7 @@ type ListArticlesRow struct {
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 	PreviousArticleID uuid.NullUUID      `json:"previous_article_id"`
+	CorrelationID     uuid.NullUUID      `json:"correlation_id"`
 	TopicTitle        string             `json:"topic_title"`
 	PublicationCount  int64              `json:"publication_count"`
 }
@@ -393,6 +397,7 @@ func (q *Queries) ListArticles(ctx context.Context, arg ListArticlesParams) ([]L
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.PreviousArticleID,
+			&i.CorrelationID,
 			&i.TopicTitle,
 			&i.PublicationCount,
 		); err != nil {
