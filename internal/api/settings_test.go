@@ -20,6 +20,8 @@ func TestValidateSettings(t *testing.T) {
 	}{
 		{"interval too small", func(s *scheduler.Settings) { s.SourceFetch.DefaultIntervalMinutes = 4 }},
 		{"interval too large", func(s *scheduler.Settings) { s.SourceFetch.DefaultIntervalMinutes = 10081 }},
+		{"workflow interval too small", func(s *scheduler.Settings) { s.ContentWorkflow.IntervalHours = 0 }},
+		{"workflow interval too large", func(s *scheduler.Settings) { s.ContentWorkflow.IntervalHours = 169 }},
 		{"no scout times", func(s *scheduler.Settings) { s.TopicScout.Times = nil }},
 		{"bad time format", func(s *scheduler.Settings) { s.TopicScout.Times = []string{"8:00"} }},
 		{"hour out of range", func(s *scheduler.Settings) { s.TopicScout.Times = []string{"25:00"} }},
@@ -34,6 +36,10 @@ func TestValidateSettings(t *testing.T) {
 		{"unknown article write timezone", func(s *scheduler.Settings) { s.ArticleWrite.Timezone = "Mars/Olympus" }},
 		{"zero article write topics", func(s *scheduler.Settings) { s.ArticleWrite.MaxTopics = 0 }},
 		{"excess article write topics", func(s *scheduler.Settings) { s.ArticleWrite.MaxTopics = 21 }},
+		{"zero snapshot retention", func(s *scheduler.Settings) { s.WorkflowSnapshots.RetentionHours = 0 }},
+		{"excess snapshot retention", func(s *scheduler.Settings) { s.WorkflowSnapshots.RetentionHours = 8761 }},
+		{"zero snapshot batch", func(s *scheduler.Settings) { s.WorkflowSnapshots.BatchSize = 0 }},
+		{"excess snapshot batch", func(s *scheduler.Settings) { s.WorkflowSnapshots.BatchSize = 1001 }},
 	}
 	for _, tc := range cases {
 		s := valid()

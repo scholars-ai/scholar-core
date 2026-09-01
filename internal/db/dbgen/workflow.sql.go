@@ -12,6 +12,60 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const archiveExpiredWorkflowSnapshots = `-- name: ArchiveExpiredWorkflowSnapshots :many
+with candidates as (
+    select id
+    from workflow_snapshots
+    where workflow_snapshots.archived_at is null and workflow_snapshots.created_at <= $1
+    order by workflow_snapshots.created_at asc
+    limit $3
+    for update skip locked
+)
+update workflow_snapshots as snapshot
+set archived_at = coalesce(snapshot.archived_at, now()),
+    storage_ref = coalesce(snapshot.storage_ref, 'postgres://workflow_snapshots/' || snapshot.id::text),
+    retention_until = snapshot.created_at + make_interval(hours => $2::int)
+from candidates
+where snapshot.id = candidates.id
+returning snapshot.id, snapshot.run_id, snapshot.kind, snapshot.payload, snapshot.sha256, snapshot.created_at, snapshot.archived_at, snapshot.storage_ref, snapshot.retention_until
+`
+
+type ArchiveExpiredWorkflowSnapshotsParams struct {
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	Column2   int32              `json:"column_2"`
+	Limit     int32              `json:"limit"`
+}
+
+func (q *Queries) ArchiveExpiredWorkflowSnapshots(ctx context.Context, arg ArchiveExpiredWorkflowSnapshotsParams) ([]WorkflowSnapshot, error) {
+	rows, err := q.db.Query(ctx, archiveExpiredWorkflowSnapshots, arg.CreatedAt, arg.Column2, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WorkflowSnapshot
+	for rows.Next() {
+		var i WorkflowSnapshot
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.Kind,
+			&i.Payload,
+			&i.Sha256,
+			&i.CreatedAt,
+			&i.ArchivedAt,
+			&i.StorageRef,
+			&i.RetentionUntil,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const archiveWorkflowSnapshot = `-- name: ArchiveWorkflowSnapshot :one
 update workflow_snapshots
 set archived_at = coalesce(archived_at, now()),

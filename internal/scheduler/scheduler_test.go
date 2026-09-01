@@ -42,3 +42,16 @@ func TestDefaultSettingsUseFixedContentCadence(t *testing.T) {
 		t.Fatalf("unexpected article write times: %v", got)
 	}
 }
+
+func TestDefaultSettingsUseWorkflowSnapshotRetention(t *testing.T) {
+	settings := DefaultSettings()
+	if !settings.WorkflowSnapshots.Enabled {
+		t.Fatal("workflow snapshot retention must be enabled by default")
+	}
+	if settings.WorkflowSnapshots.RetentionHours != 168 {
+		t.Fatalf("retention hours = %d, want 168", settings.WorkflowSnapshots.RetentionHours)
+	}
+	if settings.WorkflowSnapshots.BatchSize != 100 {
+		t.Fatalf("retention batch size = %d, want 100", settings.WorkflowSnapshots.BatchSize)
+	}
+}

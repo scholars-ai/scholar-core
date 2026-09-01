@@ -54,6 +54,23 @@ set archived_at = null
 where id = $1 and run_id = $2
 returning *;
 
+-- name: ArchiveExpiredWorkflowSnapshots :many
+with candidates as (
+    select id
+    from workflow_snapshots
+    where workflow_snapshots.archived_at is null and workflow_snapshots.created_at <= $1
+    order by workflow_snapshots.created_at asc
+    limit $3
+    for update skip locked
+)
+update workflow_snapshots as snapshot
+set archived_at = coalesce(snapshot.archived_at, now()),
+    storage_ref = coalesce(snapshot.storage_ref, 'postgres://workflow_snapshots/' || snapshot.id::text),
+    retention_until = snapshot.created_at + make_interval(hours => $2::int)
+from candidates
+where snapshot.id = candidates.id
+returning snapshot.*;
+
 -- name: ListWorkflowDecisions :many
 select * from workflow_item_decisions
 where run_id = $1 and ($2 = '' or node_run_id = $2::uuid) and ($3 = '' or decision = $3)

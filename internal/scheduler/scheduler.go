@@ -62,6 +62,11 @@ type Settings struct {
 		Timezone     string `json:"timezone"`
 		LookbackDays int    `json:"lookbackDays"`
 	} `json:"memoryReflect"`
+	WorkflowSnapshots struct {
+		Enabled        bool `json:"enabled"`
+		RetentionHours int  `json:"retentionHours"`
+		BatchSize      int  `json:"batchSize"`
+	} `json:"workflowSnapshots"`
 }
 
 const scheduledScoutMaxItems = 20
@@ -88,6 +93,9 @@ func DefaultSettings() Settings {
 	s.MemoryReflect.Time = "09:00"
 	s.MemoryReflect.Timezone = "Asia/Shanghai"
 	s.MemoryReflect.LookbackDays = 7
+	s.WorkflowSnapshots.Enabled = true
+	s.WorkflowSnapshots.RetentionHours = 168
+	s.WorkflowSnapshots.BatchSize = 100
 	return s
 }
 
@@ -165,7 +173,37 @@ func (s *Scheduler) Tick(ctx context.Context) (err error) {
 	if settings.MemoryReflect.Enabled {
 		s.tickMemoryReflect(ctx, settings)
 	}
+	if settings.WorkflowSnapshots.Enabled {
+		s.tickWorkflowSnapshotRetention(ctx, settings)
+	}
 	return nil
+}
+
+// tickWorkflowSnapshotRetention archives expired snapshots in small batches.
+// The operation is metadata-only and uses row-level locking in SQL so multiple
+// scheduler instances can safely run the same policy concurrently.
+func (s *Scheduler) tickWorkflowSnapshotRetention(ctx context.Context, settings Settings) {
+	hours := settings.WorkflowSnapshots.RetentionHours
+	if hours < 1 {
+		hours = 168
+	}
+	batchSize := settings.WorkflowSnapshots.BatchSize
+	if batchSize < 1 {
+		batchSize = 100
+	}
+	cutoff := s.now().UTC().Add(-time.Duration(hours) * time.Hour)
+	archived, err := s.q.ArchiveExpiredWorkflowSnapshots(ctx, dbgen.ArchiveExpiredWorkflowSnapshotsParams{
+		CreatedAt: pgtype.Timestamptz{Time: cutoff, Valid: true},
+		Column2:   int32(hours),
+		Limit:     int32(batchSize),
+	})
+	if err != nil {
+		s.log.Error("archive expired workflow snapshots failed", "error", err)
+		return
+	}
+	if len(archived) > 0 {
+		s.log.Info("workflow snapshots archived", "count", len(archived), "retention_hours", hours)
+	}
 }
 
 // tickContentWorkflow creates one run per configured interval and fans out source_fetch

@@ -351,6 +351,10 @@ func (h *Server) UpdateSchedulerSettings(w http.ResponseWriter, r *http.Request)
 		current.SourceFetch.Enabled = patch.SourceFetch.Enabled
 		current.SourceFetch.DefaultIntervalMinutes = patch.SourceFetch.DefaultIntervalMinutes
 	}
+	if patch.ContentWorkflow != nil {
+		current.ContentWorkflow.Enabled = patch.ContentWorkflow.Enabled
+		current.ContentWorkflow.IntervalHours = patch.ContentWorkflow.IntervalHours
+	}
 	if patch.TopicScout != nil {
 		current.TopicScout.Enabled = patch.TopicScout.Enabled
 		current.TopicScout.Times = patch.TopicScout.Times
@@ -374,6 +378,11 @@ func (h *Server) UpdateSchedulerSettings(w http.ResponseWriter, r *http.Request)
 		current.MemoryReflect.Timezone = patch.MemoryReflect.Timezone
 		current.MemoryReflect.LookbackDays = patch.MemoryReflect.LookbackDays
 	}
+	if patch.WorkflowSnapshots != nil {
+		current.WorkflowSnapshots.Enabled = patch.WorkflowSnapshots.Enabled
+		current.WorkflowSnapshots.RetentionHours = patch.WorkflowSnapshots.RetentionHours
+		current.WorkflowSnapshots.BatchSize = patch.WorkflowSnapshots.BatchSize
+	}
 	if err := validateSettings(current); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_settings", err.Error())
 		return
@@ -393,6 +402,9 @@ func (h *Server) UpdateSchedulerSettings(w http.ResponseWriter, r *http.Request)
 
 // validateSettings：API 层的最后防线，非法配置绝不入库（scheduler 直接信任 DB 内容）。
 func validateSettings(s scheduler.Settings) error {
+	if s.ContentWorkflow.IntervalHours < 1 || s.ContentWorkflow.IntervalHours > 168 {
+		return errors.New("contentWorkflow.intervalHours must be 1..168")
+	}
 	if s.SourceFetch.DefaultIntervalMinutes < 5 || s.SourceFetch.DefaultIntervalMinutes > 10080 {
 		return fmt.Errorf("sourceFetch.defaultIntervalMinutes must be 5..10080, got %d", s.SourceFetch.DefaultIntervalMinutes)
 	}
@@ -440,6 +452,12 @@ func validateSettings(s scheduler.Settings) error {
 	}
 	if s.MemoryReflect.LookbackDays < 1 || s.MemoryReflect.LookbackDays > 90 {
 		return errors.New("memoryReflect.lookbackDays must be 1..90")
+	}
+	if s.WorkflowSnapshots.RetentionHours < 1 || s.WorkflowSnapshots.RetentionHours > 8760 {
+		return errors.New("workflowSnapshots.retentionHours must be 1..8760")
+	}
+	if s.WorkflowSnapshots.BatchSize < 1 || s.WorkflowSnapshots.BatchSize > 1000 {
+		return errors.New("workflowSnapshots.batchSize must be 1..1000")
 	}
 	return nil
 }
