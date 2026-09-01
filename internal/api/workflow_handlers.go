@@ -105,9 +105,165 @@ func (h *Server) ListWorkflowRuns(w http.ResponseWriter, r *http.Request, params
 	}
 	items := make([]WorkflowRun, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, workflowRunToAPI(row))
+		item, err := h.workflowRunListItem(r.Context(), row)
+		if err != nil {
+			h.internalError(w, "summarize workflow run", err)
+			return
+		}
+		items = append(items, item)
 	}
 	writeJSON(w, http.StatusOK, WorkflowRunList{Items: items})
+}
+
+// workflowRunListItem enriches the immutable run row with a read-only funnel
+// summary. Keeping this under summary preserves compatibility with existing
+// clients while making the list endpoint useful as a production/debugging
+// entry point.
+func (h *Server) workflowRunListItem(ctx context.Context, row dbgen.WorkflowRun) (WorkflowRun, error) {
+	out := workflowRunToAPI(row)
+	nodes, err := h.q.ListWorkflowNodeRuns(ctx, row.ID)
+	if err != nil {
+		return WorkflowRun{}, err
+	}
+	decisions, err := h.q.ListWorkflowDecisions(ctx, dbgen.ListWorkflowDecisionsParams{
+		RunID: row.ID, Column2: "", Column3: "",
+	})
+	if err != nil {
+		return WorkflowRun{}, err
+	}
+	artifacts, err := h.q.ListWorkflowArtifacts(ctx, row.ID)
+	if err != nil {
+		return WorkflowRun{}, err
+	}
+	usage, err := h.workflowUsage(ctx, row.CorrelationID)
+	if err != nil {
+		return WorkflowRun{}, err
+	}
+
+	funnel := make(map[string]interface{}, len(workflowNodeKeys))
+	recentFailureNode := ""
+	var totalTokens int
+	var totalCost float32
+	knownTokens, knownCost := false, false
+	for _, node := range workflowNodeKeys {
+		nodeRun := findWorkflowNode(nodes, node)
+		counts := jsonObject(nodeRun.Counts)
+		stage := map[string]interface{}{
+			"input":    jsonInt(counts, "input"),
+			"output":   jsonInt(counts, "output"),
+			"accepted": jsonInt(counts, "accepted"),
+			"rejected": jsonInt(counts, "rejected"),
+			"skipped":  jsonInt(counts, "skipped"),
+			"failed":   jsonInt(counts, "failed"),
+			"status":   nodeRun.Status,
+		}
+		input := jsonInt(counts, "input")
+		if input > 0 {
+			stage["passRate"] = float32(jsonInt(counts, "accepted")) / float32(input)
+		}
+		if nodeRun.StartedAt.Valid && nodeRun.CompletedAt.Valid {
+			seconds := nodeRun.CompletedAt.Time.Sub(nodeRun.StartedAt.Time).Seconds()
+			if seconds >= 0 {
+				stage["durationSeconds"] = seconds
+			}
+		}
+		if nodeRun.Status == "failed" || nodeRun.Status == "partial_failed" || jsonInt(counts, "failed") > 0 {
+			recentFailureNode = node
+		}
+		if value, ok := usage[node]; ok {
+			if value.hasTokens {
+				stage["tokenCount"] = value.tokens
+				totalTokens += value.tokens
+				knownTokens = true
+			}
+			if value.hasCost {
+				stage["costUsd"] = value.cost
+				totalCost += value.cost
+				knownCost = true
+			}
+		}
+		funnel[node] = stage
+	}
+	// Decisions provide the most useful fallback when an older run or partial
+	// write has no persisted count. Never add them to non-zero counts: counts
+	// are already derived from these same decisions in current runs.
+	decisionCounts := make(map[string]map[string]int)
+	for _, decision := range decisions {
+		node := decisionNodeKey(nodes, decision.NodeRunID)
+		if node == "" {
+			continue
+		}
+		if decisionCounts[node] == nil {
+			decisionCounts[node] = make(map[string]int)
+		}
+		decisionCounts[node][string(decision.Decision)]++
+	}
+	for node, counts := range decisionCounts {
+		stage, ok := funnel[node].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for decision, count := range counts {
+			key := decision
+			if decision == "accepted" || decision == "rejected" || decision == "skipped" || decision == "failed" {
+				if intValue(stage[key]) == 0 {
+					stage[key] = count
+				}
+			}
+		}
+	}
+	total := map[string]interface{}{"artifactCount": len(artifacts)}
+	if knownTokens {
+		total["tokenCount"] = totalTokens
+	}
+	if knownCost {
+		total["costUsd"] = totalCost
+	}
+	if row.StartedAt.Valid {
+		end := row.CompletedAt
+		if !end.Valid {
+			end = row.UpdatedAt
+		}
+		if end.Valid {
+			total["durationSeconds"] = end.Time.Sub(row.StartedAt.Time).Seconds()
+		}
+	}
+	if out.Summary == nil {
+		empty := map[string]interface{}{}
+		out.Summary = &empty
+	}
+	(*out.Summary)["funnel"] = funnel
+	(*out.Summary)["total"] = total
+	if recentFailureNode != "" {
+		(*out.Summary)["recentFailureNode"] = recentFailureNode
+	} else {
+		delete(*out.Summary, "recentFailureNode")
+	}
+	return out, nil
+}
+
+var workflowNodeKeys = []string{"source_fetch", "topic_scout", "topic_evaluate", "article_write", "article_evaluate", "human_review"}
+
+func decisionNodeKey(nodes []dbgen.WorkflowNodeRun, nodeRunID uuid.UUID) string {
+	for _, node := range nodes {
+		if node.ID == nodeRunID {
+			return node.NodeKey
+		}
+	}
+	return ""
+}
+
+func intValue(value interface{}) int {
+	switch number := value.(type) {
+	case int:
+		return number
+	case int32:
+		return int(number)
+	case float64:
+		return int(number)
+	default:
+		return 0
+	}
 }
 
 func (h *Server) GetWorkflowRun(w http.ResponseWriter, r *http.Request, runID uuid.UUID) {
