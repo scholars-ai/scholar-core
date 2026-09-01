@@ -1086,7 +1086,7 @@ func (rt *Runtime) finishReviewStage(ctx context.Context, tx pgx.Tx, runID uuid.
 		}
 		if _, err := tx.Exec(ctx, `insert into workflow_artifacts (run_id, node_key, artifact_type, artifact_id, title, metadata)
             values ($1, 'human_review', 'article', $2, $3, $4::jsonb)
-            on conflict (run_id, artifact_type, artifact_id) do nothing`, runID, articleID, title, jsonString(map[string]any{"status": "pending_review"})); err != nil {
+            on conflict (run_id, node_key, artifact_type, artifact_id) do nothing`, runID, articleID, title, jsonString(map[string]any{"status": "pending_review"})); err != nil {
 			return err
 		}
 	}
