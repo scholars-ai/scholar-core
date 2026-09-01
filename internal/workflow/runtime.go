@@ -172,10 +172,7 @@ func (rt *Runtime) createContentRunTx(ctx context.Context, tx pgx.Tx, runID uuid
 			return err
 		}
 	}
-	configPayload, _ := json.Marshal(map[string]any{
-		"workflowVersion": workflowVersion, "triggerType": opts.TriggerType,
-		"overrides": cloneMap(opts.ConfigOverrides),
-	})
+	configPayload := configSnapshotPayload(opts.TriggerType, opts.ConfigOverrides)
 	configID, err := rt.createSnapshot(ctx, qtx, runID, "config", configPayload)
 	if err != nil {
 		return err
@@ -231,13 +228,21 @@ func (rt *Runtime) CreateReplay(ctx context.Context, parentID uuid.UUID, scope m
 	if parent.Mode != workflowMode {
 		return dbgen.WorkflowRun{}, fmt.Errorf("run %s is not a content workflow", parentID)
 	}
-	keyPayload := map[string]any{"parent": parentID, "from": fromNode, "scope": scope, "overrides": overrides}
+	inheritedOverrides, err := rt.parentConfigOverrides(ctx, parent)
+	if err != nil {
+		return dbgen.WorkflowRun{}, err
+	}
+	mergedOverrides := mergeConfigOverrides(inheritedOverrides, overrides)
+	if err := validateConfigOverrides(mergedOverrides); err != nil {
+		return dbgen.WorkflowRun{}, err
+	}
+	keyPayload := map[string]any{"parent": parentID, "from": fromNode, "scope": scope, "overrides": mergedOverrides}
 	keyBytes, _ := json.Marshal(keyPayload)
 	hash := sha256.Sum256(keyBytes)
 	replayKey := hex.EncodeToString(hash[:])
 	childID := uuid.New()
 	replayScope := cloneMap(scope)
-	replayScope["configOverrides"] = cloneMap(overrides)
+	replayScope["configOverrides"] = cloneMap(mergedOverrides)
 	replayScope["replayFromNode"] = fromNode
 	err = pgx.BeginFunc(ctx, rt.pool, func(tx pgx.Tx) error {
 		qtx := dbgen.New(tx)
@@ -262,9 +267,7 @@ func (rt *Runtime) CreateReplay(ctx context.Context, parentID uuid.UUID, scope m
 			return err
 		}
 		childID = inserted
-		configPayload, _ := json.Marshal(map[string]any{
-			"workflowVersion": workflowVersion, "triggerType": "replay", "overrides": cloneMap(overrides),
-		})
+		configPayload := configSnapshotPayload("replay", mergedOverrides)
 		configID, err := rt.createSnapshot(ctx, qtx, inserted, "config", configPayload)
 		if err != nil {
 			return err
@@ -300,6 +303,84 @@ func (rt *Runtime) CreateReplay(ctx context.Context, parentID uuid.UUID, scope m
 		return dbgen.WorkflowRun{}, err
 	}
 	return rt.q.GetWorkflowRun(ctx, childID)
+}
+
+const configSnapshotSchemaVersion = 1
+
+// configSnapshotPayload is the immutable, canonical description of the
+// configuration used by a run. Agent defaults that Core cannot resolve are
+// explicitly marked so a historical run is never mistaken for a fully
+// resolved configuration.
+func configSnapshotPayload(triggerType string, overrides map[string]any) []byte {
+	requested := cloneMap(overrides)
+	effective := cloneMap(overrides)
+	if _, ok := effective["topicPassThreshold"]; !ok {
+		effective["topicPassThreshold"] = defaultTopicPass
+	}
+	body := map[string]any{
+		"schemaVersion":      configSnapshotSchemaVersion,
+		"configVersion":      workflowVersion,
+		"workflowVersion":    workflowVersion,
+		"triggerType":        triggerType,
+		"overrides":          requested,
+		"requestedOverrides": requested,
+		"effective":          effective,
+		"resolution": map[string]any{
+			"status":     "validated",
+			"resolvedBy": "core",
+			"agentOwned": []string{"agentVersion", "promptVersion", "rubricVersion", "weightVersion", "model"},
+		},
+	}
+	encoded, _ := json.Marshal(body)
+	return encoded
+}
+
+func mergeConfigOverrides(inherited, explicit map[string]any) map[string]any {
+	merged := cloneMap(inherited)
+	for key, value := range explicit {
+		merged[key] = value
+	}
+	return merged
+}
+
+func (rt *Runtime) parentConfigOverrides(ctx context.Context, parent dbgen.WorkflowRun) (map[string]any, error) {
+	if !parent.ConfigSnapshotID.Valid {
+		return map[string]any{}, nil
+	}
+	var raw []byte
+	if err := rt.pool.QueryRow(ctx, `select payload from workflow_snapshots where id = $1 and run_id = $2 and kind = 'config'`, parent.ConfigSnapshotID.UUID, parent.ID).Scan(&raw); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return map[string]any{}, nil
+		}
+		return nil, err
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, fmt.Errorf("decode parent config snapshot: %w", err)
+	}
+	if err := validateConfigSnapshotPayload(payload); err != nil {
+		return nil, err
+	}
+	if effective, ok := payload["effective"].(map[string]any); ok {
+		return effective, nil
+	}
+	if overrides, ok := payload["overrides"].(map[string]any); ok {
+		return overrides, nil
+	}
+	return map[string]any{}, nil
+}
+
+func validateConfigSnapshotPayload(payload map[string]any) error {
+	if rawVersion, exists := payload["schemaVersion"]; exists {
+		version, ok := numericOverride(rawVersion)
+		if !ok || version != float64(configSnapshotSchemaVersion) {
+			return fmt.Errorf("unsupported workflow config snapshot schema version %v", rawVersion)
+		}
+	}
+	if version, ok := payload["configVersion"].(string); ok && strings.TrimSpace(version) == "" {
+		return errors.New("workflow config snapshot configVersion must be non-empty")
+	}
+	return nil
 }
 
 func (rt *Runtime) updateRunMetadata(ctx context.Context, tx pgx.Tx, runID uuid.UUID, opts CreateOptions) error {

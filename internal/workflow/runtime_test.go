@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -49,6 +50,47 @@ func TestConfigOverrideValidationRejectsUnknownAndOutOfRangeValues(t *testing.T)
 		if err := validateConfigOverrides(overrides); err == nil {
 			t.Fatalf("invalid overrides accepted: %#v", overrides)
 		}
+	}
+}
+
+func TestConfigSnapshotPayloadIsVersionedAndDeterministic(t *testing.T) {
+	payload := configSnapshotPayload("replay", map[string]any{"model": "judge", "topicPassThreshold": 72.0})
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["schemaVersion"] != float64(configSnapshotSchemaVersion) || decoded["configVersion"] != workflowVersion {
+		t.Fatalf("missing config version metadata: %#v", decoded)
+	}
+	if decoded["triggerType"] != "replay" {
+		t.Fatalf("triggerType = %#v", decoded["triggerType"])
+	}
+	effective, ok := decoded["effective"].(map[string]any)
+	if !ok || effective["model"] != "judge" || effective["topicPassThreshold"] != 72.0 {
+		t.Fatalf("unexpected effective config: %#v", decoded["effective"])
+	}
+	resolution, ok := decoded["resolution"].(map[string]any)
+	if !ok || resolution["status"] != "validated" {
+		t.Fatalf("unexpected resolution: %#v", decoded["resolution"])
+	}
+}
+
+func TestMergeConfigOverridesPreservesParentAndAppliesExplicitValues(t *testing.T) {
+	merged := mergeConfigOverrides(map[string]any{"model": "parent", "topicPassThreshold": 60.0}, map[string]any{"model": "replay"})
+	if merged["model"] != "replay" || merged["topicPassThreshold"] != 60.0 {
+		t.Fatalf("unexpected merged config: %#v", merged)
+	}
+}
+
+func TestValidateConfigSnapshotPayloadAllowsLegacyAndRejectsUnknownSchema(t *testing.T) {
+	if err := validateConfigSnapshotPayload(map[string]any{}); err != nil {
+		t.Fatalf("legacy config snapshot rejected: %v", err)
+	}
+	if err := validateConfigSnapshotPayload(map[string]any{"schemaVersion": float64(configSnapshotSchemaVersion), "configVersion": workflowVersion}); err != nil {
+		t.Fatalf("current config snapshot rejected: %v", err)
+	}
+	if err := validateConfigSnapshotPayload(map[string]any{"schemaVersion": 99.0}); err == nil {
+		t.Fatal("unknown config snapshot schema accepted")
 	}
 }
 
