@@ -1,11 +1,53 @@
 package api
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/scholars-ai/scholar-core/internal/db/dbgen"
 )
+
+func TestReplayScopeAndConfigOverridesConvertToWorkflowPayload(t *testing.T) {
+	item := uuid.New()
+	useCurrent := true
+	threshold := float32(72)
+	model := "judge-replay"
+	scope := replayScopeMap(ReplayScope{Mode: SelectedItems, ItemIds: &[]uuid.UUID{item}, UseCurrentInput: &useCurrent})
+	if scope["mode"] != "selected_items" || scope["useCurrentInput"] != true {
+		t.Fatalf("unexpected scope: %#v", scope)
+	}
+	if ids, ok := scope["itemIds"].([]string); !ok || len(ids) != 1 || ids[0] != item.String() {
+		t.Fatalf("unexpected item ids: %#v", scope["itemIds"])
+	}
+	overrides := configOverridesMap(&WorkflowConfigOverrides{Model: &model, TopicPassThreshold: &threshold})
+	if overrides["model"] != model || overrides["topicPassThreshold"] != float64(72) {
+		t.Fatalf("unexpected overrides: %#v", overrides)
+	}
+}
+
+func TestWorkflowStageMetricsIncludesCountsPassRateAndReasons(t *testing.T) {
+	nodeID := uuid.New()
+	itemID := uuid.New()
+	var score pgtype.Numeric
+	if err := score.Scan("81.5"); err != nil {
+		t.Fatal(err)
+	}
+	reasons := map[string]interface{}{}
+	metrics := workflowStageMetrics("topic_evaluate", dbgen.WorkflowNodeRun{
+		ID: nodeID, NodeKey: "topic_evaluate", Counts: json.RawMessage(`{"input":4,"accepted":2,"rejected":2,"output":2}`),
+	}, []dbgen.WorkflowItemDecision{{NodeRunID: nodeID, ItemID: itemID, Decision: "accepted", ReasonCode: "quality_ok", TotalScore: score}}, reasons, "base")
+	if metrics.InputCount == nil || *metrics.InputCount != 4 || metrics.PassRate == nil || *metrics.PassRate != 0.5 {
+		t.Fatalf("unexpected metrics: %#v", metrics)
+	}
+	if reasons["base:topic_evaluate:quality_ok"] != 1 {
+		t.Fatalf("unexpected reason counts: %#v", reasons)
+	}
+	if metrics.ScoreDistribution == nil {
+		t.Fatal("score distribution missing")
+	}
+}
 
 func TestBuildWorkflowSourcePayloadCarriesCascadeRun(t *testing.T) {
 	runID := uuid.New()

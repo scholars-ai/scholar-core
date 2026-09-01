@@ -221,6 +221,9 @@ func (rt *Runtime) CreateReplay(ctx context.Context, parentID uuid.UUID, scope m
 	if err := validateReplayScope(scope); err != nil {
 		return dbgen.WorkflowRun{}, err
 	}
+	if err := validateConfigOverrides(overrides); err != nil {
+		return dbgen.WorkflowRun{}, err
+	}
 	parent, err := rt.q.GetWorkflowRun(ctx, parentID)
 	if err != nil {
 		return dbgen.WorkflowRun{}, err
@@ -387,6 +390,7 @@ func (rt *Runtime) enqueueReplayStart(ctx context.Context, tx pgx.Tx, qtx *dbgen
 			q = queue.ArticleWrite
 			payload["topicId"] = id
 			payload["platform"] = "xiaohongshu"
+			payload["replay"] = true
 		case "article_evaluate":
 			q = queue.ArticleEvaluate
 			payload["articleId"] = id
@@ -505,6 +509,66 @@ func validateReplayScope(scope map[string]any) error {
 		return errors.New("selected_items replay requires non-empty itemIds")
 	}
 	return nil
+}
+
+func validateConfigOverrides(overrides map[string]any) error {
+	if overrides == nil {
+		return nil
+	}
+	allowed := map[string]struct{}{
+		"agentVersion": {}, "promptVersion": {}, "rubricVersion": {},
+		"topicRubricVersion": {}, "articleRubricVersion": {}, "weightVersion": {},
+		"topicWeightVersion": {}, "articleWeightVersion": {}, "model": {},
+		"topicScoutModel": {}, "topicJudgeModel": {}, "outlineModel": {},
+		"draftModel": {}, "criticModel": {}, "articleJudgeModel": {},
+		"passThreshold": {}, "topicPassThreshold": {}, "articlePassThreshold": {},
+		"maxConcurrency": {}, "maxBatchSize": {},
+	}
+	for key, value := range overrides {
+		if _, ok := allowed[key]; !ok {
+			return fmt.Errorf("unsupported workflow config override %q", key)
+		}
+		switch key {
+		case "passThreshold", "topicPassThreshold", "articlePassThreshold":
+			if number, ok := numericOverride(value); !ok || number < 0 || number > 100 {
+				return fmt.Errorf("workflow override %q must be between 0 and 100", key)
+			}
+		case "maxConcurrency":
+			if number, ok := numericOverride(value); !ok || number < 1 || number > 32 || number != float64(int(number)) {
+				return fmt.Errorf("workflow override %q must be an integer between 1 and 32", key)
+			}
+		case "maxBatchSize":
+			if number, ok := numericOverride(value); !ok || number < 1 || number > 1000 || number != float64(int(number)) {
+				return fmt.Errorf("workflow override %q must be an integer between 1 and 1000", key)
+			}
+		case "weightVersion", "topicWeightVersion", "articleWeightVersion":
+			if number, ok := numericOverride(value); !ok || number < 1 || number != float64(int(number)) {
+				return fmt.Errorf("workflow override %q must be a positive integer", key)
+			}
+		default:
+			if text, ok := value.(string); !ok || strings.TrimSpace(text) == "" {
+				return fmt.Errorf("workflow override %q must be a non-empty string", key)
+			}
+		}
+	}
+	return nil
+}
+
+func numericOverride(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	case int:
+		return float64(typed), true
+	case int32:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	default:
+		return 0, false
+	}
 }
 
 func replayMode(scope map[string]any) string {
@@ -736,7 +800,7 @@ func (rt *Runtime) reconcileTopicEvaluate(ctx context.Context, tx pgx.Tx, runID 
 	for _, id := range ids {
 		var score pgtype.Numeric
 		var evaluationID uuid.UUID
-		err := tx.QueryRow(ctx, `select id, total_score from topic_evaluations where topic_id = $1 order by created_at desc limit 1`, id).Scan(&evaluationID, &score)
+		err := tx.QueryRow(ctx, `select e.id, e.total_score from topic_evaluations e left join agent_runs ar on ar.id = e.agent_run_id where e.topic_id = $1 and ar.correlation_id = $2 order by e.created_at desc limit 1`, id, runID).Scan(&evaluationID, &score)
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue
 		}
@@ -761,6 +825,12 @@ func (rt *Runtime) reconcileTopicEvaluate(ctx context.Context, tx pgx.Tx, runID 
 				return false, err
 			}
 			if err := rt.transitionTopic(ctx, tx, id, "scored", "approved", score, evaluationID, "topic accepted by workflow gate"); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return false, err
+			}
+			// The writer agent only accepts topics that have entered the writing
+			// state. Keep this transition in the workflow transaction so the
+			// quality gate and its fan-out cannot be observed separately.
+			if err := rt.transitionTopic(ctx, tx, id, "approved", "in_writing", score, evaluationID, "topic entered workflow writing stage"); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				return false, err
 			}
 			accepted = append(accepted, id)
@@ -820,7 +890,7 @@ func (rt *Runtime) reconcileArticleWrite(ctx context.Context, tx pgx.Tx, runID u
 	if err != nil || !terminal {
 		return false, err
 	}
-	articleIDs, err := rt.articlesForTopics(ctx, tx, topicIDs)
+	articleIDs, err := rt.articlesForTopics(ctx, tx, runID, topicIDs)
 	if err != nil {
 		return false, err
 	}
@@ -841,6 +911,11 @@ func (rt *Runtime) reconcileArticleWrite(ctx context.Context, tx pgx.Tx, runID u
 	}
 	if len(articleIDs) == 0 {
 		return true, rt.skipAfter(ctx, tx, runID, "article_write", "all_writes_failed")
+	}
+	for _, topicID := range uniqueUUIDs(topicIDs) {
+		if err := rt.transitionTopic(ctx, tx, topicID, "in_writing", "written", pgtype.Numeric{}, uuid.Nil, "workflow article writing completed"); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return false, err
+		}
 	}
 	if rt.replayStopsAfter(ctx, tx, runID, "article_write") {
 		return true, rt.completeReplayOnly(ctx, tx, runID, "evaluate_only_article_write")
@@ -868,7 +943,7 @@ func (rt *Runtime) reconcileArticleEvaluate(ctx context.Context, tx pgx.Tx, runI
 		var passed bool
 		var score pgtype.Numeric
 		var evaluationID uuid.UUID
-		err := tx.QueryRow(ctx, `select id, passed, total_score from article_evaluations where article_id = $1 order by created_at desc limit 1`, id).Scan(&evaluationID, &passed, &score)
+		err := tx.QueryRow(ctx, `select e.id, e.passed, e.total_score from article_evaluations e left join agent_runs ar on ar.id = e.agent_run_id where e.article_id = $1 and ar.correlation_id = $2 order by e.created_at desc limit 1`, id, runID).Scan(&evaluationID, &passed, &score)
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue
 		}
@@ -1244,7 +1319,7 @@ func (rt *Runtime) articleWriteTerminal(ctx context.Context, tx pgx.Tx, runID uu
 	failed := 0
 	for _, target := range targets {
 		var found bool
-		if err := tx.QueryRow(ctx, `select exists(select 1 from articles where topic_id = $1 and platform = $2::platform)`, target.topic, target.platformName).Scan(&found); err != nil {
+		if err := tx.QueryRow(ctx, `select exists(select 1 from articles where topic_id = $1 and platform = $2::platform and correlation_id = $3)`, target.topic, target.platformName, runID).Scan(&found); err != nil {
 			return false, 0, err
 		}
 		if found {
@@ -1263,8 +1338,8 @@ func (rt *Runtime) articleWriteTerminal(ctx context.Context, tx pgx.Tx, runID uu
 	return true, failed, nil
 }
 
-func (rt *Runtime) articlesForTopics(ctx context.Context, tx pgx.Tx, topicIDs []uuid.UUID) ([]uuid.UUID, error) {
-	rows, err := tx.Query(ctx, `select distinct on (topic_id, platform) id from articles where topic_id = any($1) order by topic_id, platform, version desc, created_at desc`, topicIDs)
+func (rt *Runtime) articlesForTopics(ctx context.Context, tx pgx.Tx, runID uuid.UUID, topicIDs []uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := tx.Query(ctx, `select distinct on (topic_id, platform) id from articles where topic_id = any($1) and correlation_id = $2 order by topic_id, platform, version desc, created_at desc`, topicIDs, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -1289,7 +1364,7 @@ func (rt *Runtime) itemsTerminal(ctx context.Context, tx pgx.Tx, runID uuid.UUID
 	}
 	for _, id := range ids {
 		var evaluated bool
-		if err := tx.QueryRow(ctx, fmt.Sprintf(`select exists(select 1 from %s where %s = $1)`, evaluationTable, column), id).Scan(&evaluated); err != nil {
+		if err := tx.QueryRow(ctx, fmt.Sprintf(`select exists(select 1 from %s e left join agent_runs ar on ar.id = e.agent_run_id where e.%s = $1 and ar.correlation_id = $2)`, evaluationTable, column), id, runID).Scan(&evaluated); err != nil {
 			return false, 0, err
 		}
 		if evaluated {

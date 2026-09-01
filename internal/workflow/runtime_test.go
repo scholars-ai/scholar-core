@@ -35,6 +35,23 @@ func TestNormalizeCreateOptionsAppliesDefaultsAndValidatesNode(t *testing.T) {
 	}
 }
 
+func TestConfigOverrideValidationRejectsUnknownAndOutOfRangeValues(t *testing.T) {
+	if err := validateConfigOverrides(map[string]any{"topicPassThreshold": 72.0, "model": "judge"}); err != nil {
+		t.Fatalf("valid overrides rejected: %v", err)
+	}
+	for _, overrides := range []map[string]any{
+		{"unknown": true},
+		{"articlePassThreshold": 101.0},
+		{"maxConcurrency": 0.0},
+		{"weightVersion": 1.5},
+		{"model": "   "},
+	} {
+		if err := validateConfigOverrides(overrides); err == nil {
+			t.Fatalf("invalid overrides accepted: %#v", overrides)
+		}
+	}
+}
+
 func TestParseUUIDsDeduplicatesAndIgnoresInvalidValues(t *testing.T) {
 	one := uuid.New()
 	two := uuid.New()

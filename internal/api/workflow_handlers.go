@@ -192,11 +192,13 @@ func (h *Server) ListWorkflowNodeDecisions(w http.ResponseWriter, r *http.Reques
 // ReplayWorkflowRun creates an immutable child run. Execution wiring is handled by the workflow scheduler.
 func (h *Server) ReplayWorkflowRun(w http.ResponseWriter, r *http.Request, runID uuid.UUID) {
 	var req ReplayWorkflowRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
-	if req.ReplayFromNode == "" || len(req.ReplayScope) == 0 {
+	if req.ReplayFromNode == "" || req.ReplayScope.Mode == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request", "replayFromNode and replayScope are required")
 		return
 	}
@@ -208,11 +210,7 @@ func (h *Server) ReplayWorkflowRun(w http.ResponseWriter, r *http.Request, runID
 		writeError(w, http.StatusBadRequest, "invalid_node", "unknown workflow node")
 		return
 	}
-	var overrides map[string]any
-	if req.ConfigOverrides != nil {
-		overrides = *req.ConfigOverrides
-	}
-	child, err := workflow.New(h.pool, h.log).CreateReplay(r.Context(), runID, req.ReplayScope, string(req.ReplayFromNode), req.Reason, overrides)
+	child, err := workflow.New(h.pool, h.log).CreateReplay(r.Context(), runID, replayScopeMap(req.ReplayScope), string(req.ReplayFromNode), req.Reason, configOverridesMap(req.ConfigOverrides))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "workflow run not found")
@@ -258,7 +256,57 @@ func (h *Server) CompareWorkflowRuns(w http.ResponseWriter, r *http.Request, run
 		h.internalError(w, "list other workflow decisions", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, compareWorkflowRuns(base, other, baseDecisions, otherDecisions))
+	baseNodes, err := h.q.ListWorkflowNodeRuns(r.Context(), runID)
+	if err != nil {
+		h.internalError(w, "list base workflow nodes", err)
+		return
+	}
+	otherNodes, err := h.q.ListWorkflowNodeRuns(r.Context(), req.OtherRunId)
+	if err != nil {
+		h.internalError(w, "list other workflow nodes", err)
+		return
+	}
+	baseArtifacts, err := h.q.ListWorkflowArtifacts(r.Context(), runID)
+	if err != nil {
+		h.internalError(w, "list base workflow artifacts", err)
+		return
+	}
+	otherArtifacts, err := h.q.ListWorkflowArtifacts(r.Context(), req.OtherRunId)
+	if err != nil {
+		h.internalError(w, "list other workflow artifacts", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, compareWorkflowRuns(base, other, baseNodes, otherNodes, baseArtifacts, otherArtifacts, baseDecisions, otherDecisions))
+}
+
+func replayScopeMap(scope ReplayScope) map[string]any {
+	result := map[string]any{"mode": string(scope.Mode)}
+	if scope.ItemIds != nil {
+		ids := make([]string, 0, len(*scope.ItemIds))
+		for _, id := range *scope.ItemIds {
+			ids = append(ids, id.String())
+		}
+		result["itemIds"] = ids
+	}
+	if scope.UseCurrentInput != nil {
+		result["useCurrentInput"] = *scope.UseCurrentInput
+	}
+	return result
+}
+
+func configOverridesMap(overrides *WorkflowConfigOverrides) map[string]any {
+	if overrides == nil {
+		return nil
+	}
+	raw, err := json.Marshal(overrides)
+	if err != nil {
+		return nil
+	}
+	result := map[string]any{}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil
+	}
+	return result
 }
 
 func (h *Server) ListWorkflowEvents(w http.ResponseWriter, r *http.Request, runID uuid.UUID, params ListWorkflowEventsParams) {
@@ -480,28 +528,108 @@ func nullUUIDPtr(value uuid.NullUUID) *uuid.UUID {
 	return nil
 }
 
-func compareWorkflowRuns(base, other dbgen.WorkflowRun, baseDecisions, otherDecisions []dbgen.WorkflowItemDecision) WorkflowRunComparison {
-	stageCounts := map[string]interface{}{}
+func compareWorkflowRuns(base, other dbgen.WorkflowRun, baseNodes, otherNodes []dbgen.WorkflowNodeRun, baseArtifacts, otherArtifacts []dbgen.WorkflowArtifact, baseDecisions, otherDecisions []dbgen.WorkflowItemDecision) WorkflowRunComparison {
+	stages := map[string]WorkflowStageComparison{}
 	reasonCounts := map[string]interface{}{}
-	for _, set := range []struct {
-		name string
-		rows []dbgen.WorkflowItemDecision
-	}{{"base", baseDecisions}, {"other", otherDecisions}} {
-		counts := map[string]int{}
-		for _, row := range set.rows {
-			counts[string(row.Decision)]++
-			if row.ReasonCode != "" {
-				key := set.name + ":" + row.ReasonCode
-				current, _ := reasonCounts[key].(int)
-				reasonCounts[key] = current + 1
-			}
-		}
-		stageCounts[set.name] = counts
+	for _, node := range []string{"source_fetch", "topic_scout", "topic_evaluate", "article_write", "article_evaluate", "human_review"} {
+		baseMetrics := workflowStageMetrics(node, findWorkflowNode(baseNodes, node), baseDecisions, reasonCounts, "base")
+		otherMetrics := workflowStageMetrics(node, findWorkflowNode(otherNodes, node), otherDecisions, reasonCounts, "other")
+		stages[node] = WorkflowStageComparison{Base: baseMetrics, Other: otherMetrics}
 	}
-	stageCounts["baseRun"] = runComparisonSummary(base)
-	stageCounts["otherRun"] = runComparisonSummary(other)
-	sameInput := base.InputSnapshotID.Valid && other.InputSnapshotID.Valid && base.InputSnapshotID.UUID == other.InputSnapshotID.UUID
-	return WorkflowRunComparison{BaseRunId: base.ID, OtherRunId: other.ID, SameInput: sameInput, Stages: stageCounts, ReasonCounts: reasonCounts}
+	artifacts := compareArtifacts(baseArtifacts, otherArtifacts)
+	return WorkflowRunComparison{
+		BaseRunId: base.ID, OtherRunId: other.ID,
+		SameInput: base.InputSnapshotID.Valid && other.InputSnapshotID.Valid && base.InputSnapshotID.UUID == other.InputSnapshotID.UUID,
+		Stages:    stages, ReasonCounts: reasonCounts, Artifacts: &artifacts,
+	}
+}
+
+func findWorkflowNode(nodes []dbgen.WorkflowNodeRun, key string) dbgen.WorkflowNodeRun {
+	for _, node := range nodes {
+		if node.NodeKey == key {
+			return node
+		}
+	}
+	return dbgen.WorkflowNodeRun{}
+}
+
+func workflowStageMetrics(node string, nodeRun dbgen.WorkflowNodeRun, decisions []dbgen.WorkflowItemDecision, reasonCounts map[string]interface{}, set string) WorkflowStageMetrics {
+	counts := jsonObject(nodeRun.Counts)
+	metrics := WorkflowStageMetrics{
+		InputCount: workflowIntPtr(jsonInt(counts, "input")), OutputCount: workflowIntPtr(jsonInt(counts, "output")),
+		Accepted: workflowIntPtr(jsonInt(counts, "accepted")), Rejected: workflowIntPtr(jsonInt(counts, "rejected")),
+		Skipped: workflowIntPtr(jsonInt(counts, "skipped")), Failed: workflowIntPtr(jsonInt(counts, "failed")),
+	}
+	if *metrics.InputCount > 0 {
+		value := float32(*metrics.Accepted) / float32(*metrics.InputCount)
+		metrics.PassRate = &value
+	}
+	if nodeRun.ID == uuid.Nil {
+		return metrics
+	}
+	var scores []float32
+	for _, row := range decisions {
+		if row.NodeRunID != nodeRun.ID {
+			continue
+		}
+		if row.ReasonCode != "" {
+			key := set + ":" + node + ":" + row.ReasonCode
+			current, _ := reasonCounts[key].(int)
+			reasonCounts[key] = current + 1
+		}
+		if row.TotalScore.Valid {
+			scores = append(scores, numericFloat32(row.TotalScore))
+		}
+	}
+	if len(scores) > 0 {
+		histogram := map[string]interface{}{"0-59": 0, "60-79": 0, "80-100": 0}
+		for _, score := range scores {
+			bucket := "80-100"
+			if score < 60 {
+				bucket = "0-59"
+			} else if score < 80 {
+				bucket = "60-79"
+			}
+			histogram[bucket] = histogram[bucket].(int) + 1
+		}
+		metrics.ScoreDistribution = &histogram
+	}
+	return metrics
+}
+
+func jsonInt(value map[string]interface{}, key string) int {
+	if number, ok := value[key].(float64); ok {
+		return int(number)
+	}
+	if number, ok := value[key].(int); ok {
+		return number
+	}
+	return 0
+}
+
+func workflowIntPtr(value int) *int { return &value }
+
+func compareArtifacts(base, other []dbgen.WorkflowArtifact) map[string]interface{} {
+	baseSet := make(map[string]struct{}, len(base))
+	otherSet := make(map[string]struct{}, len(other))
+	for _, item := range base {
+		baseSet[item.ArtifactType+":"+item.ArtifactID.String()] = struct{}{}
+	}
+	for _, item := range other {
+		otherSet[item.ArtifactType+":"+item.ArtifactID.String()] = struct{}{}
+	}
+	added, removed := 0, 0
+	for key := range otherSet {
+		if _, ok := baseSet[key]; !ok {
+			added++
+		}
+	}
+	for key := range baseSet {
+		if _, ok := otherSet[key]; !ok {
+			removed++
+		}
+	}
+	return map[string]interface{}{"baseCount": len(baseSet), "otherCount": len(otherSet), "added": added, "removed": removed}
 }
 
 func runComparisonSummary(run dbgen.WorkflowRun) map[string]interface{} {
