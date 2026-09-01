@@ -90,8 +90,9 @@ func TestWorkflowStreamPathBypassesRequestTimeout(t *testing.T) {
 }
 
 func TestWorkflowSnapshotChecksumValidation(t *testing.T) {
-	payload := []byte(`{"node":"article_evaluate","articleIds":["a"]}`)
-	hash := sha256.Sum256(payload)
+	payload := []byte(`{ "articleIds": ["a"], "node": "article_evaluate" }`)
+	canonical := []byte(`{"articleIds":["a"],"node":"article_evaluate"}`)
+	hash := sha256.Sum256(canonical)
 	if !workflowSnapshotChecksumValid(payload, fmt.Sprintf("%x", hash[:])) {
 		t.Fatal("valid snapshot checksum rejected")
 	}

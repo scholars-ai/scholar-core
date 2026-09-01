@@ -371,6 +371,12 @@ func (h *Server) GetWorkflowSnapshot(w http.ResponseWriter, r *http.Request, run
 }
 
 func workflowSnapshotChecksumValid(payload []byte, expected string) bool {
+	var value any
+	if err := json.Unmarshal(payload, &value); err == nil {
+		if canonical, marshalErr := json.Marshal(value); marshalErr == nil {
+			payload = canonical
+		}
+	}
 	hash := sha256.Sum256(payload)
 	return fmt.Sprintf("%x", hash[:]) == expected
 }

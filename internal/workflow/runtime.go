@@ -1219,9 +1219,23 @@ func (rt *Runtime) ensureOutputSnapshot(ctx context.Context, tx pgx.Tx, runID uu
 }
 
 func (rt *Runtime) createSnapshot(ctx context.Context, qtx *dbgen.Queries, runID uuid.UUID, kind string, payload []byte) (uuid.UUID, error) {
-	hash := sha256.Sum256(payload)
+	hash := sha256.Sum256(canonicalJSON(payload))
 	row, err := qtx.CreateWorkflowSnapshot(ctx, dbgen.CreateWorkflowSnapshotParams{RunID: runID, Kind: kind, Payload: payload, Sha256: hex.EncodeToString(hash[:])})
 	return row.ID, err
+}
+
+// canonicalJSON matches PostgreSQL jsonb's normalized representation closely
+// enough for stable checksums across write/read boundaries.
+func canonicalJSON(payload []byte) []byte {
+	var value any
+	if err := json.Unmarshal(payload, &value); err != nil {
+		return payload
+	}
+	canonical, err := json.Marshal(value)
+	if err != nil {
+		return payload
+	}
+	return canonical
 }
 
 func (rt *Runtime) appendEvent(ctx context.Context, qtx *dbgen.Queries, runID uuid.UUID, node, eventType, status, message string, payload map[string]any) error {
