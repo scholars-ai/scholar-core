@@ -950,13 +950,23 @@ func (rt *Runtime) reconcileArticleEvaluate(ctx context.Context, tx pgx.Tx, runI
 		if err != nil {
 			return false, err
 		}
-		if err := rt.transitionArticle(ctx, tx, id, "draft", "scored", score, evaluationID, "article evaluation completed"); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		var currentStatus dbgen.ArticleStatus
+		if err := tx.QueryRow(ctx, `select status from articles where id = $1`, id).Scan(&currentStatus); err != nil {
 			return false, err
 		}
-		if passed {
-			if err := rt.transitionArticle(ctx, tx, id, "scored", "pending_review", score, evaluationID, "article passed quality gate"); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		// evaluate_only replay re-scores an existing review artifact. It must
+		// not move the article backwards through the normal draft state machine.
+		if currentStatus == dbgen.ArticleStatusDraft {
+			if err := rt.transitionArticle(ctx, tx, id, "draft", "scored", score, evaluationID, "article evaluation completed"); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				return false, err
 			}
+			if passed {
+				if err := rt.transitionArticle(ctx, tx, id, "scored", "pending_review", score, evaluationID, "article passed quality gate"); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+					return false, err
+				}
+				accepted = append(accepted, id)
+			}
+		} else if currentStatus == dbgen.ArticleStatusPendingReview && passed {
 			accepted = append(accepted, id)
 		}
 	}
