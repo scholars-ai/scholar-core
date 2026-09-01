@@ -12,6 +12,37 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const archiveWorkflowSnapshot = `-- name: ArchiveWorkflowSnapshot :one
+update workflow_snapshots
+set archived_at = coalesce(archived_at, now()),
+    storage_ref = coalesce(nullif($3, ''), storage_ref, 'postgres://workflow_snapshots/' || id::text)
+where id = $1 and run_id = $2
+returning id, run_id, kind, payload, sha256, created_at, archived_at, storage_ref, retention_until
+`
+
+type ArchiveWorkflowSnapshotParams struct {
+	ID      uuid.UUID   `json:"id"`
+	RunID   uuid.UUID   `json:"run_id"`
+	Column3 interface{} `json:"column_3"`
+}
+
+func (q *Queries) ArchiveWorkflowSnapshot(ctx context.Context, arg ArchiveWorkflowSnapshotParams) (WorkflowSnapshot, error) {
+	row := q.db.QueryRow(ctx, archiveWorkflowSnapshot, arg.ID, arg.RunID, arg.Column3)
+	var i WorkflowSnapshot
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.Kind,
+		&i.Payload,
+		&i.Sha256,
+		&i.CreatedAt,
+		&i.ArchivedAt,
+		&i.StorageRef,
+		&i.RetentionUntil,
+	)
+	return i, err
+}
+
 const createWorkflowArtifact = `-- name: CreateWorkflowArtifact :one
 insert into workflow_artifacts (run_id, node_key, artifact_type, artifact_id, title, metadata)
 values ($1, $2, $3, $4, $5, $6)
@@ -249,7 +280,7 @@ func (q *Queries) CreateWorkflowRun(ctx context.Context, arg CreateWorkflowRunPa
 const createWorkflowSnapshot = `-- name: CreateWorkflowSnapshot :one
 insert into workflow_snapshots (run_id, kind, payload, sha256)
 values ($1, $2, $3, $4)
-returning id, run_id, kind, payload, sha256, created_at
+returning id, run_id, kind, payload, sha256, created_at, archived_at, storage_ref, retention_until
 `
 
 type CreateWorkflowSnapshotParams struct {
@@ -274,6 +305,9 @@ func (q *Queries) CreateWorkflowSnapshot(ctx context.Context, arg CreateWorkflow
 		&i.Payload,
 		&i.Sha256,
 		&i.CreatedAt,
+		&i.ArchivedAt,
+		&i.StorageRef,
+		&i.RetentionUntil,
 	)
 	return i, err
 }
@@ -373,7 +407,7 @@ func (q *Queries) GetWorkflowRun(ctx context.Context, id uuid.UUID) (WorkflowRun
 }
 
 const getWorkflowSnapshotForRun = `-- name: GetWorkflowSnapshotForRun :one
-select id, run_id, kind, payload, sha256, created_at from workflow_snapshots
+select id, run_id, kind, payload, sha256, created_at, archived_at, storage_ref, retention_until from workflow_snapshots
 where id = $1 and run_id = $2
 `
 
@@ -392,6 +426,9 @@ func (q *Queries) GetWorkflowSnapshotForRun(ctx context.Context, arg GetWorkflow
 		&i.Payload,
 		&i.Sha256,
 		&i.CreatedAt,
+		&i.ArchivedAt,
+		&i.StorageRef,
+		&i.RetentionUntil,
 	)
 	return i, err
 }
@@ -752,6 +789,35 @@ func (q *Queries) MarkWorkflowRunSucceeded(ctx context.Context, id uuid.UUID) (W
 		&i.Summary,
 		&i.UpdatedAt,
 		&i.ReplayKey,
+	)
+	return i, err
+}
+
+const restoreWorkflowSnapshot = `-- name: RestoreWorkflowSnapshot :one
+update workflow_snapshots
+set archived_at = null
+where id = $1 and run_id = $2
+returning id, run_id, kind, payload, sha256, created_at, archived_at, storage_ref, retention_until
+`
+
+type RestoreWorkflowSnapshotParams struct {
+	ID    uuid.UUID `json:"id"`
+	RunID uuid.UUID `json:"run_id"`
+}
+
+func (q *Queries) RestoreWorkflowSnapshot(ctx context.Context, arg RestoreWorkflowSnapshotParams) (WorkflowSnapshot, error) {
+	row := q.db.QueryRow(ctx, restoreWorkflowSnapshot, arg.ID, arg.RunID)
+	var i WorkflowSnapshot
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.Kind,
+		&i.Payload,
+		&i.Sha256,
+		&i.CreatedAt,
+		&i.ArchivedAt,
+		&i.StorageRef,
+		&i.RetentionUntil,
 	)
 	return i, err
 }

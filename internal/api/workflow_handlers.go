@@ -530,6 +530,55 @@ func (h *Server) GetWorkflowSnapshot(w http.ResponseWriter, r *http.Request, run
 	writeJSON(w, http.StatusOK, workflowSnapshotToAPI(row))
 }
 
+// ArchiveWorkflowSnapshot marks a snapshot as archived while retaining its
+// payload, checksum and lineage references. The operation is idempotent.
+func (h *Server) ArchiveWorkflowSnapshot(w http.ResponseWriter, r *http.Request, runID uuid.UUID, snapshotID uuid.UUID) {
+	var req ArchiveWorkflowSnapshotJSONBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	storageRef := ""
+	if req.StorageRef != nil {
+		storageRef = strings.TrimSpace(*req.StorageRef)
+	}
+	row, err := h.q.ArchiveWorkflowSnapshot(r.Context(), dbgen.ArchiveWorkflowSnapshotParams{
+		ID: snapshotID, RunID: runID, Column3: storageRef,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not_found", "workflow snapshot not found")
+		return
+	}
+	if err != nil {
+		h.internalError(w, "archive workflow snapshot", err)
+		return
+	}
+	if !workflowSnapshotChecksumValid(row.Payload, row.Sha256) {
+		writeError(w, http.StatusInternalServerError, "snapshot_corrupt", "workflow snapshot checksum mismatch")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// RestoreWorkflowSnapshot clears the archive marker without changing the
+// immutable payload or checksum. The operation is idempotent.
+func (h *Server) RestoreWorkflowSnapshot(w http.ResponseWriter, r *http.Request, runID uuid.UUID, snapshotID uuid.UUID) {
+	row, err := h.q.RestoreWorkflowSnapshot(r.Context(), dbgen.RestoreWorkflowSnapshotParams{ID: snapshotID, RunID: runID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not_found", "workflow snapshot not found")
+		return
+	}
+	if err != nil {
+		h.internalError(w, "restore workflow snapshot", err)
+		return
+	}
+	if !workflowSnapshotChecksumValid(row.Payload, row.Sha256) {
+		writeError(w, http.StatusInternalServerError, "snapshot_corrupt", "workflow snapshot checksum mismatch")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func workflowSnapshotChecksumValid(payload []byte, expected string) bool {
 	var value any
 	if err := json.Unmarshal(payload, &value); err == nil {
@@ -993,10 +1042,23 @@ func workflowArtifactsToAPI(rows []dbgen.WorkflowArtifact) []WorkflowArtifact {
 }
 
 func workflowSnapshotToAPI(row dbgen.WorkflowSnapshot) WorkflowSnapshot {
-	return WorkflowSnapshot{
+	item := WorkflowSnapshot{
 		Id: row.ID, RunId: row.RunID, Kind: WorkflowSnapshotKind(row.Kind),
 		Payload: jsonObject(row.Payload), Sha256: row.Sha256, CreatedAt: row.CreatedAt.Time,
 	}
+	if row.ArchivedAt.Valid {
+		value := row.ArchivedAt.Time
+		item.ArchivedAt = &value
+	}
+	if row.StorageRef.Valid {
+		value := row.StorageRef.String
+		item.StorageRef = &value
+	}
+	if row.RetentionUntil.Valid {
+		value := row.RetentionUntil.Time
+		item.RetentionUntil = &value
+	}
+	return item
 }
 
 func jsonObject(raw []byte) map[string]any {

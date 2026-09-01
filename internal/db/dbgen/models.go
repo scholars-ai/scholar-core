@@ -882,10 +882,13 @@ type WorkflowRun struct {
 }
 
 type WorkflowSnapshot struct {
-	ID        uuid.UUID          `json:"id"`
-	RunID     uuid.UUID          `json:"run_id"`
-	Kind      string             `json:"kind"`
-	Payload   []byte             `json:"payload"`
-	Sha256    string             `json:"sha256"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ID             uuid.UUID          `json:"id"`
+	RunID          uuid.UUID          `json:"run_id"`
+	Kind           string             `json:"kind"`
+	Payload        []byte             `json:"payload"`
+	Sha256         string             `json:"sha256"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	ArchivedAt     pgtype.Timestamptz `json:"archived_at"`
+	StorageRef     pgtype.Text        `json:"storage_ref"`
+	RetentionUntil pgtype.Timestamptz `json:"retention_until"`
 }

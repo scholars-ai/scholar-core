@@ -41,6 +41,19 @@ returning *;
 select * from workflow_snapshots
 where id = $1 and run_id = $2;
 
+-- name: ArchiveWorkflowSnapshot :one
+update workflow_snapshots
+set archived_at = coalesce(archived_at, now()),
+    storage_ref = coalesce(nullif($3, ''), storage_ref, 'postgres://workflow_snapshots/' || id::text)
+where id = $1 and run_id = $2
+returning *;
+
+-- name: RestoreWorkflowSnapshot :one
+update workflow_snapshots
+set archived_at = null
+where id = $1 and run_id = $2
+returning *;
+
 -- name: ListWorkflowDecisions :many
 select * from workflow_item_decisions
 where run_id = $1 and ($2 = '' or node_run_id = $2::uuid) and ($3 = '' or decision = $3)
