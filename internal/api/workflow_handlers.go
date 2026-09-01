@@ -234,6 +234,10 @@ func (h *Server) workflowRunListItem(ctx context.Context, row dbgen.WorkflowRun)
 	}
 	(*out.Summary)["funnel"] = funnel
 	(*out.Summary)["total"] = total
+	metadata := jsonObject(row.Metadata)
+	if observability, ok := metadata["observability"].(map[string]interface{}); ok {
+		(*out.Summary)["observability"] = observability
+	}
 	if recentFailureNode != "" {
 		(*out.Summary)["recentFailureNode"] = recentFailureNode
 	} else {

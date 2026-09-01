@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -23,12 +24,36 @@ import (
 
 type Shutdown func(context.Context) error
 
+const (
+	StatusDisabled    = "disabled"
+	StatusConfigured  = "configured"
+	StatusUnavailable = "unavailable"
+)
+
+var runtimeStatus atomic.Value
+
+func init() {
+	runtimeStatus.Store(StatusDisabled)
+}
+
+// RuntimeStatus describes whether this process could initialize an OTLP
+// exporter. It is intentionally a coarse health signal for workflow metadata;
+// exporter delivery remains asynchronous and must not block business work.
+func RuntimeStatus() string {
+	value, _ := runtimeStatus.Load().(string)
+	if value == "" {
+		return StatusDisabled
+	}
+	return value
+}
+
 func Init(ctx context.Context, serviceName string) (Shutdown, error) {
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{}, propagation.Baggage{},
 	))
 	endpoint := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
 	if endpoint == "" {
+		runtimeStatus.Store(StatusDisabled)
 		initMetrics()
 		return func(context.Context) error { return nil }, nil
 	}
@@ -44,6 +69,7 @@ func Init(ctx context.Context, serviceName string) (Shutdown, error) {
 		),
 	)
 	if err != nil {
+		runtimeStatus.Store(StatusUnavailable)
 		return nil, err
 	}
 
@@ -55,10 +81,12 @@ func Init(ctx context.Context, serviceName string) (Shutdown, error) {
 	}
 	traceExporter, err := otlptracegrpc.New(ctx, traceOpts...)
 	if err != nil {
+		runtimeStatus.Store(StatusUnavailable)
 		return nil, err
 	}
 	metricExporter, err := otlpmetricgrpc.New(ctx, metricOpts...)
 	if err != nil {
+		runtimeStatus.Store(StatusUnavailable)
 		return nil, err
 	}
 
@@ -73,6 +101,7 @@ func Init(ctx context.Context, serviceName string) (Shutdown, error) {
 	)
 	otel.SetTracerProvider(tp)
 	otel.SetMeterProvider(mp)
+	runtimeStatus.Store(StatusConfigured)
 	initMetrics()
 
 	return func(ctx context.Context) error {

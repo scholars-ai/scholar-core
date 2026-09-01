@@ -23,6 +23,7 @@ import (
 
 	"github.com/scholars-ai/scholar-core/internal/db/dbgen"
 	"github.com/scholars-ai/scholar-core/internal/queue"
+	"github.com/scholars-ai/scholar-core/internal/telemetry"
 )
 
 const (
@@ -139,6 +140,10 @@ func (rt *Runtime) createContentRunTx(ctx context.Context, tx pgx.Tx, runID uuid
 	metadata["sourceCount"] = len(opts.SourceIDs)
 	metadata["sourceIds"] = opts.SourceIDs
 	metadata["workflowVersion"] = workflowVersion
+	metadata["observability"] = map[string]any{
+		"status":  telemetry.RuntimeStatus(),
+		"missing": telemetry.RuntimeStatus() == telemetry.StatusUnavailable,
+	}
 	if opts.ScheduleRunID != nil {
 		metadata["scheduleRunId"] = opts.ScheduleRunID
 	}
