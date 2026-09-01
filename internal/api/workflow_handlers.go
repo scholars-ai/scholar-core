@@ -177,7 +177,163 @@ func (h *Server) GetWorkflowRun(w http.ResponseWriter, r *http.Request, runID uu
 		h.internalError(w, "list workflow artifacts", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, workflowRunDetailToAPI(run, events, artifacts))
+	nodeRuns, err := h.q.ListWorkflowNodeRuns(r.Context(), runID)
+	if err != nil {
+		h.internalError(w, "list workflow node runs", err)
+		return
+	}
+	decisions, err := h.q.ListWorkflowDecisions(r.Context(), dbgen.ListWorkflowDecisionsParams{
+		RunID: runID, Column2: "", Column3: "",
+	})
+	if err != nil {
+		h.internalError(w, "list workflow decisions", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, workflowRunDetailToAPI(run, events, artifacts, nodeRuns, decisions))
+}
+
+// ListWorkflowNodeDecisions returns the immutable item-level decisions for one node.
+func (h *Server) ListWorkflowNodeDecisions(w http.ResponseWriter, r *http.Request, runID uuid.UUID, nodeKey WorkflowNodeKey, params ListWorkflowNodeDecisionsParams) {
+	if !h.workflowRunExists(w, r, runID) {
+		return
+	}
+	valid := map[WorkflowNodeKey]bool{
+		"source_fetch": true, "topic_scout": true, "topic_evaluate": true,
+		"article_write": true, "article_evaluate": true, "human_review": true,
+	}
+	if !valid[nodeKey] {
+		writeError(w, http.StatusBadRequest, "invalid_node", "unknown workflow node")
+		return
+	}
+	dec := ""
+	if params.Decision != nil {
+		dec = string(*params.Decision)
+	}
+	nodeRuns, err := h.q.ListWorkflowNodeRuns(r.Context(), runID)
+	if err != nil {
+		h.internalError(w, "list workflow node runs", err)
+		return
+	}
+	var nodeRunID uuid.UUID
+	for _, nodeRun := range nodeRuns {
+		if nodeRun.NodeKey == string(nodeKey) {
+			nodeRunID = nodeRun.ID
+			break
+		}
+	}
+	if nodeRunID == uuid.Nil {
+		writeJSON(w, http.StatusOK, []WorkflowItemDecision{})
+		return
+	}
+	rows, err := h.q.ListWorkflowDecisions(r.Context(), dbgen.ListWorkflowDecisionsParams{
+		RunID: runID, Column2: nodeRunID, Column3: dec,
+	})
+	if err != nil {
+		h.internalError(w, "list workflow node decisions", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, workflowDecisionsToAPI(rows))
+}
+
+// ReplayWorkflowRun creates an immutable child run. Execution wiring is handled by the workflow scheduler.
+func (h *Server) ReplayWorkflowRun(w http.ResponseWriter, r *http.Request, runID uuid.UUID) {
+	var req ReplayWorkflowRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if req.ReplayFromNode == "" || len(req.ReplayScope) == 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "replayFromNode and replayScope are required")
+		return
+	}
+	valid := map[WorkflowNodeKey]bool{
+		"source_fetch": true, "topic_scout": true, "topic_evaluate": true,
+		"article_write": true, "article_evaluate": true, "human_review": true,
+	}
+	if !valid[req.ReplayFromNode] {
+		writeError(w, http.StatusBadRequest, "invalid_node", "unknown workflow node")
+		return
+	}
+	parent, err := h.q.GetWorkflowRun(r.Context(), runID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not_found", "workflow run not found")
+		return
+	}
+	if err != nil {
+		h.internalError(w, "get replay parent", err)
+		return
+	}
+	childID := uuid.New()
+	scope, _ := json.Marshal(req.ReplayScope)
+	metadata := jsonObject(parent.Metadata)
+	metadata["parentRunId"] = runID.String()
+	if req.Reason != nil {
+		metadata["replayReason"] = *req.Reason
+	}
+	if req.ConfigOverrides != nil {
+		metadata["configOverrides"] = *req.ConfigOverrides
+	}
+	metadataJSON, _ := json.Marshal(metadata)
+	err = pgx.BeginFunc(r.Context(), h.pool, func(tx pgx.Tx) error {
+		_, err := tx.Exec(r.Context(), `insert into workflow_runs
+            (id, correlation_id, mode, start_node, status, metadata, trigger_type, parent_run_id, replay_from_node, replay_scope, input_snapshot_id, config_snapshot_id)
+            values ($1, $2, 'content_production', $3, 'queued', $4, 'replay', $5, $3, $6, $7, $8)`,
+			childID, childID, string(req.ReplayFromNode), metadataJSON, runID, scope,
+			parent.InputSnapshotID, parent.ConfigSnapshotID)
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(r.Context(), `insert into workflow_events (run_id, node_key, event_type, status, message, payload)
+            values ($1, $2, 'run_created', 'queued', 'replay 工作流已创建', $3)`, childID, string(req.ReplayFromNode), scope)
+		return err
+	})
+	if err != nil {
+		h.internalError(w, "create replay workflow run", err)
+		return
+	}
+	child, err := h.q.GetWorkflowRun(r.Context(), childID)
+	if err != nil {
+		h.internalError(w, "get replay workflow run", err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, workflowRunToAPI(child))
+}
+
+func (h *Server) CompareWorkflowRuns(w http.ResponseWriter, r *http.Request, runID uuid.UUID) {
+	var req CompareWorkflowRunsJSONBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	base, err := h.q.GetWorkflowRun(r.Context(), runID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not_found", "base workflow run not found")
+		return
+	}
+	if err != nil {
+		h.internalError(w, "get base workflow run", err)
+		return
+	}
+	other, err := h.q.GetWorkflowRun(r.Context(), req.OtherRunId)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not_found", "other workflow run not found")
+		return
+	}
+	if err != nil {
+		h.internalError(w, "get other workflow run", err)
+		return
+	}
+	baseDecisions, err := h.q.ListWorkflowDecisions(r.Context(), dbgen.ListWorkflowDecisionsParams{RunID: runID, Column2: "", Column3: ""})
+	if err != nil {
+		h.internalError(w, "list base workflow decisions", err)
+		return
+	}
+	otherDecisions, err := h.q.ListWorkflowDecisions(r.Context(), dbgen.ListWorkflowDecisionsParams{RunID: req.OtherRunId, Column2: "", Column3: ""})
+	if err != nil {
+		h.internalError(w, "list other workflow decisions", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, compareWorkflowRuns(base, other, baseDecisions, otherDecisions))
 }
 
 func (h *Server) ListWorkflowEvents(w http.ResponseWriter, r *http.Request, runID uuid.UUID, params ListWorkflowEventsParams) {
@@ -296,24 +452,129 @@ func reduceWorkflowNodeStatus(events []dbgen.WorkflowEvent, nodeKey string) stri
 
 func workflowRunToAPI(row dbgen.WorkflowRun) WorkflowRun {
 	metadata := jsonObject(row.Metadata)
-	return WorkflowRun{
+	out := WorkflowRun{
 		Id: row.ID, CorrelationId: row.CorrelationID, Mode: WorkflowRunMode(row.Mode),
-		StartNode: WorkflowRunStartNode(row.StartNode), Status: WorkflowRunStatus(row.Status),
+		StartNode: WorkflowNodeKey(row.StartNode), Status: WorkflowRunStatus(row.Status),
 		ErrorMessage: optionalText(row.ErrorMessage), Metadata: &metadata,
 		CreatedAt: row.CreatedAt.Time, StartedAt: optionalTime(row.StartedAt),
-		CompletedAt: optionalTime(row.CompletedAt),
+		CompletedAt: optionalTime(row.CompletedAt), TriggerType: WorkflowTriggerType(row.TriggerType),
+	}
+	if row.ParentRunID.Valid {
+		v := row.ParentRunID.UUID
+		out.ParentRunId = &v
+	}
+	if row.ReplayFromNode.Valid {
+		v := WorkflowNodeKey(row.ReplayFromNode.String)
+		out.ReplayFromNode = &v
+	}
+	replayScope := jsonObject(row.ReplayScope)
+	out.ReplayScope = &replayScope
+	if row.InputSnapshotID.Valid {
+		v := row.InputSnapshotID.UUID
+		out.InputSnapshotId = &v
+	}
+	if row.ConfigSnapshotID.Valid {
+		v := row.ConfigSnapshotID.UUID
+		out.ConfigSnapshotId = &v
+	}
+	summary := jsonObject(row.Summary)
+	out.Summary = &summary
+	return out
+}
+
+func workflowRunDetailToAPI(run dbgen.WorkflowRun, events []dbgen.WorkflowEvent, artifacts []dbgen.WorkflowArtifact, nodeRuns []dbgen.WorkflowNodeRun, decisions []dbgen.WorkflowItemDecision) WorkflowRunDetail {
+	base := workflowRunToAPI(run)
+	return WorkflowRunDetail{
+		Id: base.Id, CorrelationId: base.CorrelationId, Mode: base.Mode,
+		StartNode: base.StartNode, Status: base.Status,
+		ErrorMessage: base.ErrorMessage, Metadata: base.Metadata, CreatedAt: base.CreatedAt,
+		StartedAt: base.StartedAt, CompletedAt: base.CompletedAt,
+		TriggerType: base.TriggerType, ParentRunId: base.ParentRunId, ReplayFromNode: base.ReplayFromNode,
+		ReplayScope: base.ReplayScope, InputSnapshotId: base.InputSnapshotId, ConfigSnapshotId: base.ConfigSnapshotId,
+		Summary: base.Summary, Events: workflowEventsToAPI(events), Artifacts: workflowArtifactsToAPI(artifacts),
+		NodeRuns: workflowNodeRunsToAPI(nodeRuns), Decisions: workflowDecisionsToAPI(decisions),
 	}
 }
 
-func workflowRunDetailToAPI(run dbgen.WorkflowRun, events []dbgen.WorkflowEvent, artifacts []dbgen.WorkflowArtifact) WorkflowRunDetail {
-	base := workflowRunToAPI(run)
-	return WorkflowRunDetail{
-		Id: base.Id, CorrelationId: base.CorrelationId, Mode: WorkflowRunDetailMode(base.Mode),
-		StartNode: WorkflowRunDetailStartNode(base.StartNode), Status: WorkflowRunDetailStatus(base.Status),
-		ErrorMessage: base.ErrorMessage, Metadata: base.Metadata, CreatedAt: base.CreatedAt,
-		StartedAt: base.StartedAt, CompletedAt: base.CompletedAt,
-		Events: workflowEventsToAPI(events), Artifacts: workflowArtifactsToAPI(artifacts),
+func workflowNodeRunsToAPI(rows []dbgen.WorkflowNodeRun) []WorkflowNodeRun {
+	items := make([]WorkflowNodeRun, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, WorkflowNodeRun{Id: row.ID, RunId: row.RunID, NodeKey: WorkflowNodeKey(row.NodeKey), Status: WorkflowNodeStatus(row.Status),
+			InputSnapshotId: nullUUIDPtr(row.InputSnapshotID), OutputSnapshotId: nullUUIDPtr(row.OutputSnapshotID), ConfigSnapshot: jsonObject(row.ConfigSnapshot), Counts: jsonObject(row.Counts),
+			CreatedAt: row.CreatedAt.Time, StartedAt: optionalTime(row.StartedAt), CompletedAt: optionalTime(row.CompletedAt)})
 	}
+	return items
+}
+
+func workflowDecisionsToAPI(rows []dbgen.WorkflowItemDecision) []WorkflowItemDecision {
+	items := make([]WorkflowItemDecision, 0, len(rows))
+	for _, row := range rows {
+		var scores *map[string]float32
+		if len(row.DimensionScores) > 0 {
+			var value map[string]float32
+			if json.Unmarshal(row.DimensionScores, &value) == nil {
+				scores = &value
+			}
+		}
+		item := WorkflowItemDecision{Id: row.ID, RunId: row.RunID, NodeRunId: row.NodeRunID, ItemId: row.ItemID, ItemType: WorkflowItemType(row.ItemType), Decision: WorkflowDecision(row.Decision), ReasonCode: row.ReasonCode, Reason: row.Reason,
+			DimensionScores: scores, InputRefs: jsonObject(row.InputRefs), EvidenceRefs: jsonObject(row.EvidenceRefs), CreatedAt: row.CreatedAt.Time}
+		if row.TotalScore.Valid {
+			v := numericFloat32(row.TotalScore)
+			item.TotalScore = &v
+		}
+		if row.Threshold.Valid {
+			v := numericFloat32(row.Threshold)
+			item.Threshold = &v
+		}
+		if row.WeightVersion.Valid {
+			v := int(row.WeightVersion.Int32)
+			item.WeightVersion = &v
+		}
+		if row.RubricVersion.Valid {
+			v := row.RubricVersion.String
+			item.RubricVersion = &v
+		}
+		if row.AgentRunID.Valid {
+			v := row.AgentRunID.UUID
+			item.AgentRunId = &v
+		}
+		if row.TraceID.Valid {
+			v := row.TraceID.String
+			item.TraceId = &v
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func nullUUIDPtr(value uuid.NullUUID) *uuid.UUID {
+	if value.Valid {
+		v := value.UUID
+		return &v
+	}
+	return nil
+}
+
+func compareWorkflowRuns(base, other dbgen.WorkflowRun, baseDecisions, otherDecisions []dbgen.WorkflowItemDecision) WorkflowRunComparison {
+	stageCounts := map[string]interface{}{}
+	reasonCounts := map[string]interface{}{}
+	for _, set := range []struct {
+		name string
+		rows []dbgen.WorkflowItemDecision
+	}{{"base", baseDecisions}, {"other", otherDecisions}} {
+		counts := map[string]int{}
+		for _, row := range set.rows {
+			counts[string(row.Decision)]++
+			if row.ReasonCode != "" {
+				key := set.name + ":" + row.ReasonCode
+				current, _ := reasonCounts[key].(int)
+				reasonCounts[key] = current + 1
+			}
+		}
+		stageCounts[set.name] = counts
+	}
+	sameInput := base.InputSnapshotID.Valid && other.InputSnapshotID.Valid && base.InputSnapshotID.UUID == other.InputSnapshotID.UUID
+	return WorkflowRunComparison{BaseRunId: base.ID, OtherRunId: other.ID, SameInput: sameInput, Stages: stageCounts, ReasonCounts: reasonCounts}
 }
 
 func workflowEventsToAPI(rows []dbgen.WorkflowEvent) []WorkflowEvent {

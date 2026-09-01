@@ -798,14 +798,16 @@ type WeightSet struct {
 }
 
 type WorkflowArtifact struct {
-	ID           uuid.UUID          `json:"id"`
-	RunID        uuid.UUID          `json:"run_id"`
-	NodeKey      string             `json:"node_key"`
-	ArtifactType string             `json:"artifact_type"`
-	ArtifactID   uuid.UUID          `json:"artifact_id"`
-	Title        string             `json:"title"`
-	Metadata     []byte             `json:"metadata"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	ID               uuid.UUID          `json:"id"`
+	RunID            uuid.UUID          `json:"run_id"`
+	NodeKey          string             `json:"node_key"`
+	ArtifactType     string             `json:"artifact_type"`
+	ArtifactID       uuid.UUID          `json:"artifact_id"`
+	Title            string             `json:"title"`
+	Metadata         []byte             `json:"metadata"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	ParentArtifactID uuid.NullUUID      `json:"parent_artifact_id"`
+	SnapshotID       uuid.NullUUID      `json:"snapshot_id"`
 }
 
 type WorkflowEvent struct {
@@ -821,15 +823,67 @@ type WorkflowEvent struct {
 	OccurredAt pgtype.Timestamptz `json:"occurred_at"`
 }
 
+type WorkflowItemDecision struct {
+	ID              uuid.UUID          `json:"id"`
+	RunID           uuid.UUID          `json:"run_id"`
+	NodeRunID       uuid.UUID          `json:"node_run_id"`
+	ItemID          uuid.UUID          `json:"item_id"`
+	ItemType        string             `json:"item_type"`
+	Decision        string             `json:"decision"`
+	ReasonCode      string             `json:"reason_code"`
+	Reason          string             `json:"reason"`
+	DimensionScores []byte             `json:"dimension_scores"`
+	TotalScore      pgtype.Numeric     `json:"total_score"`
+	Threshold       pgtype.Numeric     `json:"threshold"`
+	WeightVersion   pgtype.Int4        `json:"weight_version"`
+	RubricVersion   pgtype.Text        `json:"rubric_version"`
+	InputRefs       []byte             `json:"input_refs"`
+	EvidenceRefs    []byte             `json:"evidence_refs"`
+	AgentRunID      uuid.NullUUID      `json:"agent_run_id"`
+	TraceID         pgtype.Text        `json:"trace_id"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+}
+
+type WorkflowNodeRun struct {
+	ID               uuid.UUID          `json:"id"`
+	RunID            uuid.UUID          `json:"run_id"`
+	NodeKey          string             `json:"node_key"`
+	Status           string             `json:"status"`
+	InputSnapshotID  uuid.NullUUID      `json:"input_snapshot_id"`
+	OutputSnapshotID uuid.NullUUID      `json:"output_snapshot_id"`
+	ConfigSnapshot   []byte             `json:"config_snapshot"`
+	Counts           []byte             `json:"counts"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	StartedAt        pgtype.Timestamptz `json:"started_at"`
+	CompletedAt      pgtype.Timestamptz `json:"completed_at"`
+}
+
 type WorkflowRun struct {
-	ID            uuid.UUID          `json:"id"`
-	CorrelationID uuid.UUID          `json:"correlation_id"`
-	Mode          string             `json:"mode"`
-	StartNode     string             `json:"start_node"`
-	Status        string             `json:"status"`
-	ErrorMessage  pgtype.Text        `json:"error_message"`
-	Metadata      []byte             `json:"metadata"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	StartedAt     pgtype.Timestamptz `json:"started_at"`
-	CompletedAt   pgtype.Timestamptz `json:"completed_at"`
+	ID               uuid.UUID          `json:"id"`
+	CorrelationID    uuid.UUID          `json:"correlation_id"`
+	Mode             string             `json:"mode"`
+	StartNode        string             `json:"start_node"`
+	Status           string             `json:"status"`
+	ErrorMessage     pgtype.Text        `json:"error_message"`
+	Metadata         []byte             `json:"metadata"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	StartedAt        pgtype.Timestamptz `json:"started_at"`
+	CompletedAt      pgtype.Timestamptz `json:"completed_at"`
+	TriggerType      string             `json:"trigger_type"`
+	ParentRunID      uuid.NullUUID      `json:"parent_run_id"`
+	ReplayFromNode   pgtype.Text        `json:"replay_from_node"`
+	ReplayScope      []byte             `json:"replay_scope"`
+	InputSnapshotID  uuid.NullUUID      `json:"input_snapshot_id"`
+	ConfigSnapshotID uuid.NullUUID      `json:"config_snapshot_id"`
+	Summary          []byte             `json:"summary"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
+type WorkflowSnapshot struct {
+	ID        uuid.UUID          `json:"id"`
+	RunID     uuid.UUID          `json:"run_id"`
+	Kind      string             `json:"kind"`
+	Payload   []byte             `json:"payload"`
+	Sha256    string             `json:"sha256"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }

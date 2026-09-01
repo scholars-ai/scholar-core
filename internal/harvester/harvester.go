@@ -574,7 +574,7 @@ func (h *Harvester) transitionScored(ctx context.Context) {
 
 func (h *Harvester) isCascadeRun(ctx context.Context, runID uuid.UUID) bool {
 	run, err := h.q.GetWorkflowRun(ctx, runID)
-	return err == nil && run.Mode == "cascade" && (run.Status == "queued" || run.Status == "running")
+	return err == nil && run.Mode == "content_production" && (run.Status == "queued" || run.Status == "running")
 }
 
 func (h *Harvester) autoApproveCascadeTopic(
@@ -655,7 +655,7 @@ func (h *Harvester) syncWorkflowArtifacts(ctx context.Context) {
 		return
 	}
 	for _, run := range runs {
-		if run.Status == "succeeded" || run.Status == "failed" {
+		if run.Status == "completed" || run.Status == "completed_empty" || run.Status == "failed" || run.Status == "partial_failed" {
 			continue
 		}
 		rawItems, err := h.q.ListWorkflowRawItems(ctx, uuid.NullUUID{UUID: run.ID, Valid: true})

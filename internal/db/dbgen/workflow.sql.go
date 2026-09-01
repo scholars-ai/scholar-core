@@ -17,7 +17,7 @@ insert into workflow_artifacts (run_id, node_key, artifact_type, artifact_id, ti
 values ($1, $2, $3, $4, $5, $6)
 on conflict (run_id, artifact_type, artifact_id) do update
 set title = excluded.title, metadata = excluded.metadata
-returning id, run_id, node_key, artifact_type, artifact_id, title, metadata, created_at
+returning id, run_id, node_key, artifact_type, artifact_id, title, metadata, created_at, parent_artifact_id, snapshot_id
 `
 
 type CreateWorkflowArtifactParams struct {
@@ -47,6 +47,79 @@ func (q *Queries) CreateWorkflowArtifact(ctx context.Context, arg CreateWorkflow
 		&i.ArtifactID,
 		&i.Title,
 		&i.Metadata,
+		&i.CreatedAt,
+		&i.ParentArtifactID,
+		&i.SnapshotID,
+	)
+	return i, err
+}
+
+const createWorkflowDecision = `-- name: CreateWorkflowDecision :one
+insert into workflow_item_decisions
+    (run_id, node_run_id, item_id, item_type, decision, reason_code, reason,
+     dimension_scores, total_score, threshold, weight_version, rubric_version,
+     input_refs, evidence_refs, agent_run_id, trace_id)
+values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+returning id, run_id, node_run_id, item_id, item_type, decision, reason_code, reason, dimension_scores, total_score, threshold, weight_version, rubric_version, input_refs, evidence_refs, agent_run_id, trace_id, created_at
+`
+
+type CreateWorkflowDecisionParams struct {
+	RunID           uuid.UUID      `json:"run_id"`
+	NodeRunID       uuid.UUID      `json:"node_run_id"`
+	ItemID          uuid.UUID      `json:"item_id"`
+	ItemType        string         `json:"item_type"`
+	Decision        string         `json:"decision"`
+	ReasonCode      string         `json:"reason_code"`
+	Reason          string         `json:"reason"`
+	DimensionScores []byte         `json:"dimension_scores"`
+	TotalScore      pgtype.Numeric `json:"total_score"`
+	Threshold       pgtype.Numeric `json:"threshold"`
+	WeightVersion   pgtype.Int4    `json:"weight_version"`
+	RubricVersion   pgtype.Text    `json:"rubric_version"`
+	InputRefs       []byte         `json:"input_refs"`
+	EvidenceRefs    []byte         `json:"evidence_refs"`
+	AgentRunID      uuid.NullUUID  `json:"agent_run_id"`
+	TraceID         pgtype.Text    `json:"trace_id"`
+}
+
+func (q *Queries) CreateWorkflowDecision(ctx context.Context, arg CreateWorkflowDecisionParams) (WorkflowItemDecision, error) {
+	row := q.db.QueryRow(ctx, createWorkflowDecision,
+		arg.RunID,
+		arg.NodeRunID,
+		arg.ItemID,
+		arg.ItemType,
+		arg.Decision,
+		arg.ReasonCode,
+		arg.Reason,
+		arg.DimensionScores,
+		arg.TotalScore,
+		arg.Threshold,
+		arg.WeightVersion,
+		arg.RubricVersion,
+		arg.InputRefs,
+		arg.EvidenceRefs,
+		arg.AgentRunID,
+		arg.TraceID,
+	)
+	var i WorkflowItemDecision
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.NodeRunID,
+		&i.ItemID,
+		&i.ItemType,
+		&i.Decision,
+		&i.ReasonCode,
+		&i.Reason,
+		&i.DimensionScores,
+		&i.TotalScore,
+		&i.Threshold,
+		&i.WeightVersion,
+		&i.RubricVersion,
+		&i.InputRefs,
+		&i.EvidenceRefs,
+		&i.AgentRunID,
+		&i.TraceID,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -94,10 +167,42 @@ func (q *Queries) CreateWorkflowEvent(ctx context.Context, arg CreateWorkflowEve
 	return i, err
 }
 
+const createWorkflowNodeRun = `-- name: CreateWorkflowNodeRun :one
+insert into workflow_node_runs (run_id, node_key, status, config_snapshot)
+values ($1, $2, 'queued', $3)
+on conflict (run_id, node_key) do update set config_snapshot = excluded.config_snapshot
+returning id, run_id, node_key, status, input_snapshot_id, output_snapshot_id, config_snapshot, counts, created_at, started_at, completed_at
+`
+
+type CreateWorkflowNodeRunParams struct {
+	RunID          uuid.UUID `json:"run_id"`
+	NodeKey        string    `json:"node_key"`
+	ConfigSnapshot []byte    `json:"config_snapshot"`
+}
+
+func (q *Queries) CreateWorkflowNodeRun(ctx context.Context, arg CreateWorkflowNodeRunParams) (WorkflowNodeRun, error) {
+	row := q.db.QueryRow(ctx, createWorkflowNodeRun, arg.RunID, arg.NodeKey, arg.ConfigSnapshot)
+	var i WorkflowNodeRun
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.NodeKey,
+		&i.Status,
+		&i.InputSnapshotID,
+		&i.OutputSnapshotID,
+		&i.ConfigSnapshot,
+		&i.Counts,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+	)
+	return i, err
+}
+
 const createWorkflowRun = `-- name: CreateWorkflowRun :one
 insert into workflow_runs (id, correlation_id, mode, start_node, status, metadata)
 values ($1, $2, $3, $4, 'queued', $5)
-returning id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at
+returning id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at, trigger_type, parent_run_id, replay_from_node, replay_scope, input_snapshot_id, config_snapshot_id, summary, updated_at
 `
 
 type CreateWorkflowRunParams struct {
@@ -128,15 +233,55 @@ func (q *Queries) CreateWorkflowRun(ctx context.Context, arg CreateWorkflowRunPa
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.CompletedAt,
+		&i.TriggerType,
+		&i.ParentRunID,
+		&i.ReplayFromNode,
+		&i.ReplayScope,
+		&i.InputSnapshotID,
+		&i.ConfigSnapshotID,
+		&i.Summary,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const createWorkflowSnapshot = `-- name: CreateWorkflowSnapshot :one
+insert into workflow_snapshots (run_id, kind, payload, sha256)
+values ($1, $2, $3, $4)
+returning id, run_id, kind, payload, sha256, created_at
+`
+
+type CreateWorkflowSnapshotParams struct {
+	RunID   uuid.UUID `json:"run_id"`
+	Kind    string    `json:"kind"`
+	Payload []byte    `json:"payload"`
+	Sha256  string    `json:"sha256"`
+}
+
+func (q *Queries) CreateWorkflowSnapshot(ctx context.Context, arg CreateWorkflowSnapshotParams) (WorkflowSnapshot, error) {
+	row := q.db.QueryRow(ctx, createWorkflowSnapshot,
+		arg.RunID,
+		arg.Kind,
+		arg.Payload,
+		arg.Sha256,
+	)
+	var i WorkflowSnapshot
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.Kind,
+		&i.Payload,
+		&i.Sha256,
+		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const finishWorkflowRun = `-- name: FinishWorkflowRun :one
 update workflow_runs
-set status = $2, error_message = $3, completed_at = now()
-where id = $1 and status not in ('succeeded', 'failed')
-returning id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at
+set status = $2, error_message = $3, completed_at = now(), updated_at = now()
+where id = $1 and status not in ('completed', 'completed_empty', 'partial_failed', 'failed', 'cancelled')
+returning id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at, trigger_type, parent_run_id, replay_from_node, replay_scope, input_snapshot_id, config_snapshot_id, summary, updated_at
 `
 
 type FinishWorkflowRunParams struct {
@@ -159,12 +304,43 @@ func (q *Queries) FinishWorkflowRun(ctx context.Context, arg FinishWorkflowRunPa
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.CompletedAt,
+		&i.TriggerType,
+		&i.ParentRunID,
+		&i.ReplayFromNode,
+		&i.ReplayScope,
+		&i.InputSnapshotID,
+		&i.ConfigSnapshotID,
+		&i.Summary,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getWorkflowNodeRun = `-- name: GetWorkflowNodeRun :one
+select id, run_id, node_key, status, input_snapshot_id, output_snapshot_id, config_snapshot, counts, created_at, started_at, completed_at from workflow_node_runs where id = $1
+`
+
+func (q *Queries) GetWorkflowNodeRun(ctx context.Context, id uuid.UUID) (WorkflowNodeRun, error) {
+	row := q.db.QueryRow(ctx, getWorkflowNodeRun, id)
+	var i WorkflowNodeRun
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.NodeKey,
+		&i.Status,
+		&i.InputSnapshotID,
+		&i.OutputSnapshotID,
+		&i.ConfigSnapshot,
+		&i.Counts,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
 	)
 	return i, err
 }
 
 const getWorkflowRun = `-- name: GetWorkflowRun :one
-select id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at from workflow_runs where id = $1
+select id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at, trigger_type, parent_run_id, replay_from_node, replay_scope, input_snapshot_id, config_snapshot_id, summary, updated_at from workflow_runs where id = $1
 `
 
 func (q *Queries) GetWorkflowRun(ctx context.Context, id uuid.UUID) (WorkflowRun, error) {
@@ -181,6 +357,14 @@ func (q *Queries) GetWorkflowRun(ctx context.Context, id uuid.UUID) (WorkflowRun
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.CompletedAt,
+		&i.TriggerType,
+		&i.ParentRunID,
+		&i.ReplayFromNode,
+		&i.ReplayScope,
+		&i.InputSnapshotID,
+		&i.ConfigSnapshotID,
+		&i.Summary,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -242,7 +426,7 @@ func (q *Queries) ListWorkflowArticles(ctx context.Context, correlationID uuid.N
 }
 
 const listWorkflowArtifacts = `-- name: ListWorkflowArtifacts :many
-select id, run_id, node_key, artifact_type, artifact_id, title, metadata, created_at from workflow_artifacts
+select id, run_id, node_key, artifact_type, artifact_id, title, metadata, created_at, parent_artifact_id, snapshot_id from workflow_artifacts
 where run_id = $1
 order by created_at asc
 `
@@ -264,6 +448,59 @@ func (q *Queries) ListWorkflowArtifacts(ctx context.Context, runID uuid.UUID) ([
 			&i.ArtifactID,
 			&i.Title,
 			&i.Metadata,
+			&i.CreatedAt,
+			&i.ParentArtifactID,
+			&i.SnapshotID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkflowDecisions = `-- name: ListWorkflowDecisions :many
+select id, run_id, node_run_id, item_id, item_type, decision, reason_code, reason, dimension_scores, total_score, threshold, weight_version, rubric_version, input_refs, evidence_refs, agent_run_id, trace_id, created_at from workflow_item_decisions
+where run_id = $1 and ($2 = '' or node_run_id = $2::uuid) and ($3 = '' or decision = $3)
+order by created_at asc
+`
+
+type ListWorkflowDecisionsParams struct {
+	RunID   uuid.UUID   `json:"run_id"`
+	Column2 interface{} `json:"column_2"`
+	Column3 interface{} `json:"column_3"`
+}
+
+func (q *Queries) ListWorkflowDecisions(ctx context.Context, arg ListWorkflowDecisionsParams) ([]WorkflowItemDecision, error) {
+	rows, err := q.db.Query(ctx, listWorkflowDecisions, arg.RunID, arg.Column2, arg.Column3)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WorkflowItemDecision
+	for rows.Next() {
+		var i WorkflowItemDecision
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.NodeRunID,
+			&i.ItemID,
+			&i.ItemType,
+			&i.Decision,
+			&i.ReasonCode,
+			&i.Reason,
+			&i.DimensionScores,
+			&i.TotalScore,
+			&i.Threshold,
+			&i.WeightVersion,
+			&i.RubricVersion,
+			&i.InputRefs,
+			&i.EvidenceRefs,
+			&i.AgentRunID,
+			&i.TraceID,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -320,6 +557,42 @@ func (q *Queries) ListWorkflowEvents(ctx context.Context, arg ListWorkflowEvents
 	return items, nil
 }
 
+const listWorkflowNodeRuns = `-- name: ListWorkflowNodeRuns :many
+select id, run_id, node_key, status, input_snapshot_id, output_snapshot_id, config_snapshot, counts, created_at, started_at, completed_at from workflow_node_runs where run_id = $1 order by created_at asc
+`
+
+func (q *Queries) ListWorkflowNodeRuns(ctx context.Context, runID uuid.UUID) ([]WorkflowNodeRun, error) {
+	rows, err := q.db.Query(ctx, listWorkflowNodeRuns, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WorkflowNodeRun
+	for rows.Next() {
+		var i WorkflowNodeRun
+		if err := rows.Scan(
+			&i.ID,
+			&i.RunID,
+			&i.NodeKey,
+			&i.Status,
+			&i.InputSnapshotID,
+			&i.OutputSnapshotID,
+			&i.ConfigSnapshot,
+			&i.Counts,
+			&i.CreatedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWorkflowRawItems = `-- name: ListWorkflowRawItems :many
 select id, title from raw_items where correlation_id = $1 order by created_at asc
 `
@@ -350,7 +623,7 @@ func (q *Queries) ListWorkflowRawItems(ctx context.Context, correlationID uuid.N
 }
 
 const listWorkflowRuns = `-- name: ListWorkflowRuns :many
-select id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at from workflow_runs order by created_at desc limit $1
+select id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at, trigger_type, parent_run_id, replay_from_node, replay_scope, input_snapshot_id, config_snapshot_id, summary, updated_at from workflow_runs order by created_at desc limit $1
 `
 
 func (q *Queries) ListWorkflowRuns(ctx context.Context, limit int32) ([]WorkflowRun, error) {
@@ -373,6 +646,14 @@ func (q *Queries) ListWorkflowRuns(ctx context.Context, limit int32) ([]Workflow
 			&i.CreatedAt,
 			&i.StartedAt,
 			&i.CompletedAt,
+			&i.TriggerType,
+			&i.ParentRunID,
+			&i.ReplayFromNode,
+			&i.ReplayScope,
+			&i.InputSnapshotID,
+			&i.ConfigSnapshotID,
+			&i.Summary,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -415,9 +696,9 @@ func (q *Queries) ListWorkflowTopics(ctx context.Context, correlationID uuid.Nul
 
 const markWorkflowRunSucceeded = `-- name: MarkWorkflowRunSucceeded :one
 update workflow_runs
-set status = 'succeeded', completed_at = now()
+set status = 'completed', completed_at = now(), updated_at = now()
 where id = $1 and status in ('queued', 'running')
-returning id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at
+returning id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at, trigger_type, parent_run_id, replay_from_node, replay_scope, input_snapshot_id, config_snapshot_id, summary, updated_at
 `
 
 func (q *Queries) MarkWorkflowRunSucceeded(ctx context.Context, id uuid.UUID) (WorkflowRun, error) {
@@ -434,6 +715,14 @@ func (q *Queries) MarkWorkflowRunSucceeded(ctx context.Context, id uuid.UUID) (W
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.CompletedAt,
+		&i.TriggerType,
+		&i.ParentRunID,
+		&i.ReplayFromNode,
+		&i.ReplayScope,
+		&i.InputSnapshotID,
+		&i.ConfigSnapshotID,
+		&i.Summary,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -442,7 +731,7 @@ const startWorkflowRun = `-- name: StartWorkflowRun :one
 update workflow_runs
 set status = 'running', started_at = coalesce(started_at, now())
 where id = $1 and status = 'queued'
-returning id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at
+returning id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at, trigger_type, parent_run_id, replay_from_node, replay_scope, input_snapshot_id, config_snapshot_id, summary, updated_at
 `
 
 func (q *Queries) StartWorkflowRun(ctx context.Context, id uuid.UUID) (WorkflowRun, error) {
@@ -456,6 +745,59 @@ func (q *Queries) StartWorkflowRun(ctx context.Context, id uuid.UUID) (WorkflowR
 		&i.Status,
 		&i.ErrorMessage,
 		&i.Metadata,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.TriggerType,
+		&i.ParentRunID,
+		&i.ReplayFromNode,
+		&i.ReplayScope,
+		&i.InputSnapshotID,
+		&i.ConfigSnapshotID,
+		&i.Summary,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateWorkflowNodeRun = `-- name: UpdateWorkflowNodeRun :one
+update workflow_node_runs
+set status = $2,
+    input_snapshot_id = coalesce($3, input_snapshot_id),
+    output_snapshot_id = coalesce($4, output_snapshot_id),
+    counts = coalesce($5, counts),
+    started_at = case when $2 = 'running' then coalesce(started_at, now()) else started_at end,
+    completed_at = case when $2 in ('succeeded', 'partial_failed', 'failed', 'skipped', 'cancelled') then now() else completed_at end
+where id = $1
+returning id, run_id, node_key, status, input_snapshot_id, output_snapshot_id, config_snapshot, counts, created_at, started_at, completed_at
+`
+
+type UpdateWorkflowNodeRunParams struct {
+	ID               uuid.UUID     `json:"id"`
+	Status           string        `json:"status"`
+	InputSnapshotID  uuid.NullUUID `json:"input_snapshot_id"`
+	OutputSnapshotID uuid.NullUUID `json:"output_snapshot_id"`
+	Counts           []byte        `json:"counts"`
+}
+
+func (q *Queries) UpdateWorkflowNodeRun(ctx context.Context, arg UpdateWorkflowNodeRunParams) (WorkflowNodeRun, error) {
+	row := q.db.QueryRow(ctx, updateWorkflowNodeRun,
+		arg.ID,
+		arg.Status,
+		arg.InputSnapshotID,
+		arg.OutputSnapshotID,
+		arg.Counts,
+	)
+	var i WorkflowNodeRun
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.NodeKey,
+		&i.Status,
+		&i.InputSnapshotID,
+		&i.OutputSnapshotID,
+		&i.ConfigSnapshot,
+		&i.Counts,
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.CompletedAt,

@@ -30,6 +30,10 @@ import (
 
 // Settings 镜像 shared 的 SchedulerSettings schema（jsonb 整体存取，API 层已校验）。
 type Settings struct {
+	ContentWorkflow struct {
+		Enabled       bool `json:"enabled"`
+		IntervalHours int  `json:"intervalHours"`
+	} `json:"contentWorkflow"`
 	SourceFetch struct {
 		Enabled                bool `json:"enabled"`
 		DefaultIntervalMinutes int  `json:"defaultIntervalMinutes"`
@@ -64,6 +68,8 @@ const scheduledScoutMaxItems = 20
 // DefaultSettings 仅用于首次 seed（SPEC-008 §3.2）。
 func DefaultSettings() Settings {
 	var s Settings
+	s.ContentWorkflow.Enabled = true
+	s.ContentWorkflow.IntervalHours = 12
 	s.SourceFetch.Enabled = true
 	s.SourceFetch.DefaultIntervalMinutes = 120
 	s.TopicScout.Enabled = true
@@ -142,19 +148,89 @@ func (s *Scheduler) Tick(ctx context.Context) (err error) {
 	if err != nil {
 		return fmt.Errorf("load settings: %w", err)
 	}
-	if settings.SourceFetch.Enabled {
-		s.tickSourceFetch(ctx, settings)
-	}
-	if settings.TopicScout.Enabled {
-		s.tickTopicScout(ctx, settings)
-	}
-	if settings.ArticleWrite.Enabled {
-		s.tickArticleWrite(ctx, settings)
+	if settings.ContentWorkflow.Enabled {
+		s.tickContentWorkflow(ctx, settings)
+	} else {
+		if settings.SourceFetch.Enabled {
+			s.tickSourceFetch(ctx, settings)
+		}
+		if settings.TopicScout.Enabled {
+			s.tickTopicScout(ctx, settings)
+		}
+		if settings.ArticleWrite.Enabled {
+			s.tickArticleWrite(ctx, settings)
+		}
 	}
 	if settings.MemoryReflect.Enabled {
 		s.tickMemoryReflect(ctx, settings)
 	}
 	return nil
+}
+
+// tickContentWorkflow creates one run per configured interval and fans out source_fetch
+// jobs in the same transaction. Downstream barriers are completed by workers/harvester.
+func (s *Scheduler) tickContentWorkflow(ctx context.Context, settings Settings) {
+	hours := settings.ContentWorkflow.IntervalHours
+	if hours < 1 {
+		hours = 12
+	}
+	now := s.now().UTC()
+	planned := now.Truncate(time.Duration(hours) * time.Hour)
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		qtx := s.q.WithTx(tx)
+		scheduleID, err := qtx.RecordScheduleRun(ctx, dbgen.RecordScheduleRunParams{
+			ScheduleKey: "content_production_workflow",
+			PlannedAt:   pgtype.Timestamptz{Time: planned, Valid: true},
+			Queue:       string(queue.SourceFetch),
+			Note:        pgtype.Text{String: "SPEC-010 content workflow", Valid: true},
+		})
+		if isNoRows(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		sources, err := qtx.ListEnabledSourceIDs(ctx)
+		if err != nil {
+			return err
+		}
+		runID := uuid.New()
+		metadata, _ := json.Marshal(map[string]any{"sourceCount": len(sources), "sourceIds": sources, "scheduleRunId": scheduleID})
+		run, err := qtx.CreateWorkflowRun(ctx, dbgen.CreateWorkflowRunParams{ID: runID, CorrelationID: runID, Mode: "content_production", StartNode: "source_fetch", Metadata: metadata})
+		if err != nil {
+			return err
+		}
+		_ = run
+		if len(sources) == 0 {
+			_, err = tx.Exec(ctx, "update workflow_runs set status = 'completed_empty', completed_at = now(), updated_at = now(), summary = $2::jsonb where id = $1", runID, `{"reason":"no_enabled_sources"}`)
+			return err
+		}
+		config, _ := json.Marshal(map[string]any{"intervalHours": hours})
+		if _, err := qtx.CreateWorkflowNodeRun(ctx, dbgen.CreateWorkflowNodeRunParams{RunID: runID, NodeKey: "source_fetch", ConfigSnapshot: config}); err != nil {
+			return err
+		}
+		payload, _ := json.Marshal(map[string]any{"sourceIds": sources, "workflowRunId": runID.String(), "cascade": true})
+		if _, err := qtx.CreateWorkflowEvent(ctx, dbgen.CreateWorkflowEventParams{RunID: runID, NodeKey: "source_fetch", EventType: "run_created", Status: "queued", Message: "定时内容生产工作流已创建", Payload: payload}); err != nil {
+			return err
+		}
+		for _, sourceID := range sources {
+			msgID, err := queue.Send(ctx, tx, queue.SourceFetch, buildWorkflowSourcePayload(sourceID, runID), queue.WithCorrelation(runID), queue.WithTrigger("scheduler"))
+			if err != nil {
+				return err
+			}
+			if err := setScheduleRunMsg(ctx, tx, scheduleID, msgID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		s.log.Error("enqueue content workflow failed", "error", err)
+	}
+}
+
+func buildWorkflowSourcePayload(sourceID, runID uuid.UUID) map[string]any {
+	return map[string]any{"sourceId": sourceID.String(), "cascade": true, "workflowRunId": runID.String()}
 }
 
 func (s *Scheduler) tickArticleWrite(ctx context.Context, settings Settings) {
