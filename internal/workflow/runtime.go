@@ -247,7 +247,7 @@ func (rt *Runtime) CreateReplay(ctx context.Context, parentID uuid.UUID, scope m
              parent_run_id, replay_from_node, replay_scope, input_snapshot_id, replay_key)
             values ($1, $1, $2, $3, 'queued', $4::jsonb, 'replay', $5, $3,
                     $6::jsonb, $7, $8)
-            on conflict (replay_key) do nothing
+            on conflict (replay_key) where replay_key is not null do nothing
             returning id`, childID, workflowMode, fromNode,
 			jsonString(map[string]any{"parentRunId": parentID, "replayReason": deref(reason), "workflowVersion": workflowVersion}),
 			parentID, jsonString(replayScope), nullableUUID(parent.InputSnapshotID), replayKey)
