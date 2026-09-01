@@ -1,8 +1,11 @@
 package api
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -83,5 +86,38 @@ func TestWorkflowStreamPathBypassesRequestTimeout(t *testing.T) {
 	}
 	if isWorkflowStreamPath("/api/v1/workflow/runs") {
 		t.Fatal("regular workflow API must retain request timeout")
+	}
+}
+
+func TestWorkflowSnapshotChecksumValidation(t *testing.T) {
+	payload := []byte(`{"node":"article_evaluate","articleIds":["a"]}`)
+	hash := sha256.Sum256(payload)
+	if !workflowSnapshotChecksumValid(payload, fmt.Sprintf("%x", hash[:])) {
+		t.Fatal("valid snapshot checksum rejected")
+	}
+	if workflowSnapshotChecksumValid(append(payload, 'x'), fmt.Sprintf("%x", hash[:])) {
+		t.Fatal("tampered snapshot checksum accepted")
+	}
+}
+
+func TestWorkflowComparisonIncludesDurationAndUsage(t *testing.T) {
+	baseID, otherID := uuid.New(), uuid.New()
+	started := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	completedBase := started.Add(4 * time.Second)
+	completedOther := started.Add(7 * time.Second)
+	baseNode := dbgen.WorkflowNodeRun{ID: uuid.New(), NodeKey: "article_evaluate", Counts: json.RawMessage(`{"input":2,"accepted":1,"rejected":1}`), StartedAt: pgtype.Timestamptz{Time: started, Valid: true}, CompletedAt: pgtype.Timestamptz{Time: completedBase, Valid: true}}
+	otherNode := dbgen.WorkflowNodeRun{ID: uuid.New(), NodeKey: "article_evaluate", Counts: json.RawMessage(`{"input":2,"accepted":2}`), StartedAt: pgtype.Timestamptz{Time: started, Valid: true}, CompletedAt: pgtype.Timestamptz{Time: completedOther, Valid: true}}
+	baseUsage := map[string]workflowStageUsage{"article_evaluate": {tokens: 120, cost: 0.12, hasTokens: true, hasCost: true}}
+	otherUsage := map[string]workflowStageUsage{"article_evaluate": {tokens: 180, cost: 0.18, hasTokens: true, hasCost: true}}
+	snapshotID := uuid.New()
+	baseRun := dbgen.WorkflowRun{ID: baseID, InputSnapshotID: uuid.NullUUID{UUID: snapshotID, Valid: true}, StartedAt: pgtype.Timestamptz{Time: started, Valid: true}, CompletedAt: pgtype.Timestamptz{Time: completedBase, Valid: true}}
+	otherRun := dbgen.WorkflowRun{ID: otherID, InputSnapshotID: uuid.NullUUID{UUID: snapshotID, Valid: true}, StartedAt: pgtype.Timestamptz{Time: started, Valid: true}, CompletedAt: pgtype.Timestamptz{Time: completedOther, Valid: true}}
+	comparison := compareWorkflowRunsWithUsage(baseRun, otherRun, []dbgen.WorkflowNodeRun{baseNode}, []dbgen.WorkflowNodeRun{otherNode}, nil, nil, nil, nil, baseUsage, otherUsage)
+	baseMetrics := comparison.Stages["article_evaluate"].Base
+	if baseMetrics.DurationSeconds == nil || *baseMetrics.DurationSeconds != 4 || baseMetrics.TokenCount == nil || *baseMetrics.TokenCount != 120 || baseMetrics.Cost == nil || *baseMetrics.Cost != 0.12 {
+		t.Fatalf("base metrics missing duration or usage: %#v", baseMetrics)
+	}
+	if comparison.Cost == nil || (*comparison.Cost)["base"].(map[string]interface{})["tokenCount"] != 120 {
+		t.Fatalf("run usage missing from comparison: %#v", comparison.Cost)
 	}
 }

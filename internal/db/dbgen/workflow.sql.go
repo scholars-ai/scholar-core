@@ -372,6 +372,30 @@ func (q *Queries) GetWorkflowRun(ctx context.Context, id uuid.UUID) (WorkflowRun
 	return i, err
 }
 
+const getWorkflowSnapshotForRun = `-- name: GetWorkflowSnapshotForRun :one
+select id, run_id, kind, payload, sha256, created_at from workflow_snapshots
+where id = $1 and run_id = $2
+`
+
+type GetWorkflowSnapshotForRunParams struct {
+	ID    uuid.UUID `json:"id"`
+	RunID uuid.UUID `json:"run_id"`
+}
+
+func (q *Queries) GetWorkflowSnapshotForRun(ctx context.Context, arg GetWorkflowSnapshotForRunParams) (WorkflowSnapshot, error) {
+	row := q.db.QueryRow(ctx, getWorkflowSnapshotForRun, arg.ID, arg.RunID)
+	var i WorkflowSnapshot
+	err := row.Scan(
+		&i.ID,
+		&i.RunID,
+		&i.Kind,
+		&i.Payload,
+		&i.Sha256,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const listEnabledSourceIDs = `-- name: ListEnabledSourceIDs :many
 select id from sources where enabled = true and archived_at is null order by created_at asc
 `

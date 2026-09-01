@@ -37,6 +37,10 @@ insert into workflow_snapshots (run_id, kind, payload, sha256)
 values ($1, $2, $3, $4)
 returning *;
 
+-- name: GetWorkflowSnapshotForRun :one
+select * from workflow_snapshots
+where id = $1 and run_id = $2;
+
 -- name: ListWorkflowDecisions :many
 select * from workflow_item_decisions
 where run_id = $1 and ($2 = '' or node_run_id = $2::uuid) and ($3 = '' or decision = $3)

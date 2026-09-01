@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -276,7 +277,17 @@ func (h *Server) CompareWorkflowRuns(w http.ResponseWriter, r *http.Request, run
 		h.internalError(w, "list other workflow artifacts", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, compareWorkflowRuns(base, other, baseNodes, otherNodes, baseArtifacts, otherArtifacts, baseDecisions, otherDecisions))
+	baseUsage, err := h.workflowUsage(r.Context(), base.CorrelationID)
+	if err != nil {
+		h.internalError(w, "list base workflow usage", err)
+		return
+	}
+	otherUsage, err := h.workflowUsage(r.Context(), other.CorrelationID)
+	if err != nil {
+		h.internalError(w, "list other workflow usage", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, compareWorkflowRunsWithUsage(base, other, baseNodes, otherNodes, baseArtifacts, otherArtifacts, baseDecisions, otherDecisions, baseUsage, otherUsage))
 }
 
 func replayScopeMap(scope ReplayScope) map[string]any {
@@ -335,6 +346,33 @@ func (h *Server) ListWorkflowArtifacts(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 	writeJSON(w, http.StatusOK, workflowArtifactsToAPI(rows))
+}
+
+// GetWorkflowSnapshot returns an immutable node input/output/config snapshot.
+// The run id is part of the lookup so a snapshot cannot be read through an
+// unrelated workflow run, and the checksum is verified before exposing data.
+func (h *Server) GetWorkflowSnapshot(w http.ResponseWriter, r *http.Request, runID uuid.UUID, snapshotID uuid.UUID) {
+	row, err := h.q.GetWorkflowSnapshotForRun(r.Context(), dbgen.GetWorkflowSnapshotForRunParams{
+		ID: snapshotID, RunID: runID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not_found", "workflow snapshot not found")
+		return
+	}
+	if err != nil {
+		h.internalError(w, "get workflow snapshot", err)
+		return
+	}
+	if !workflowSnapshotChecksumValid(row.Payload, row.Sha256) {
+		writeError(w, http.StatusInternalServerError, "snapshot_corrupt", "workflow snapshot checksum mismatch")
+		return
+	}
+	writeJSON(w, http.StatusOK, workflowSnapshotToAPI(row))
+}
+
+func workflowSnapshotChecksumValid(payload []byte, expected string) bool {
+	hash := sha256.Sum256(payload)
+	return fmt.Sprintf("%x", hash[:]) == expected
 }
 
 func (h *Server) StreamWorkflowRun(w http.ResponseWriter, r *http.Request, runID uuid.UUID) {
@@ -529,19 +567,120 @@ func nullUUIDPtr(value uuid.NullUUID) *uuid.UUID {
 }
 
 func compareWorkflowRuns(base, other dbgen.WorkflowRun, baseNodes, otherNodes []dbgen.WorkflowNodeRun, baseArtifacts, otherArtifacts []dbgen.WorkflowArtifact, baseDecisions, otherDecisions []dbgen.WorkflowItemDecision) WorkflowRunComparison {
+	return compareWorkflowRunsWithUsage(base, other, baseNodes, otherNodes, baseArtifacts, otherArtifacts, baseDecisions, otherDecisions, nil, nil)
+}
+
+type workflowStageUsage struct {
+	tokens    int
+	cost      float32
+	hasTokens bool
+	hasCost   bool
+}
+
+func (h *Server) workflowUsage(ctx context.Context, correlationID uuid.UUID) (map[string]workflowStageUsage, error) {
+	rows, err := h.pool.Query(ctx, `
+		select replace(job_type, '.', '_') as node_key,
+		       coalesce(sum(coalesce(tokens_in, 0) + coalesce(tokens_out, 0))
+		           filter (where tokens_in is not null or tokens_out is not null), 0)::bigint,
+		       coalesce(sum(cost_usd) filter (where cost_usd is not null), 0)::numeric,
+		       coalesce(bool_or(tokens_in is not null or tokens_out is not null), false),
+		       coalesce(bool_or(cost_usd is not null), false)
+		from agent_runs
+		where correlation_id = $1
+		  and job_type in ('source.fetch', 'topic.scout', 'topic.evaluate', 'article.write', 'article.evaluate')
+		group by job_type`, correlationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	usage := make(map[string]workflowStageUsage)
+	for rows.Next() {
+		var node string
+		var tokens int64
+		var cost pgtype.Numeric
+		var hasTokens, hasCost bool
+		if err := rows.Scan(&node, &tokens, &cost, &hasTokens, &hasCost); err != nil {
+			return nil, err
+		}
+		usage[node] = workflowStageUsage{tokens: int(tokens), cost: numericFloat32(cost), hasTokens: hasTokens, hasCost: hasCost}
+	}
+	return usage, rows.Err()
+}
+
+func compareWorkflowRunsWithUsage(base, other dbgen.WorkflowRun, baseNodes, otherNodes []dbgen.WorkflowNodeRun, baseArtifacts, otherArtifacts []dbgen.WorkflowArtifact, baseDecisions, otherDecisions []dbgen.WorkflowItemDecision, baseUsage, otherUsage map[string]workflowStageUsage) WorkflowRunComparison {
 	stages := map[string]WorkflowStageComparison{}
 	reasonCounts := map[string]interface{}{}
 	for _, node := range []string{"source_fetch", "topic_scout", "topic_evaluate", "article_write", "article_evaluate", "human_review"} {
 		baseMetrics := workflowStageMetrics(node, findWorkflowNode(baseNodes, node), baseDecisions, reasonCounts, "base")
 		otherMetrics := workflowStageMetrics(node, findWorkflowNode(otherNodes, node), otherDecisions, reasonCounts, "other")
+		applyWorkflowUsage(&baseMetrics, node, findWorkflowNode(baseNodes, node), baseUsage)
+		applyWorkflowUsage(&otherMetrics, node, findWorkflowNode(otherNodes, node), otherUsage)
 		stages[node] = WorkflowStageComparison{Base: baseMetrics, Other: otherMetrics}
 	}
 	artifacts := compareArtifacts(baseArtifacts, otherArtifacts)
+	cost := map[string]interface{}{
+		"base":  workflowRunCost(base, baseUsage),
+		"other": workflowRunCost(other, otherUsage),
+	}
 	return WorkflowRunComparison{
 		BaseRunId: base.ID, OtherRunId: other.ID,
 		SameInput: base.InputSnapshotID.Valid && other.InputSnapshotID.Valid && base.InputSnapshotID.UUID == other.InputSnapshotID.UUID,
-		Stages:    stages, ReasonCounts: reasonCounts, Artifacts: &artifacts,
+		Stages:    stages, ReasonCounts: reasonCounts, Artifacts: &artifacts, Cost: &cost,
 	}
+}
+
+func applyWorkflowUsage(metrics *WorkflowStageMetrics, node string, nodeRun dbgen.WorkflowNodeRun, usage map[string]workflowStageUsage) {
+	if nodeRun.StartedAt.Valid && nodeRun.CompletedAt.Valid {
+		seconds := float32(nodeRun.CompletedAt.Time.Sub(nodeRun.StartedAt.Time).Seconds())
+		if seconds >= 0 {
+			metrics.DurationSeconds = &seconds
+		}
+	}
+	stage, ok := usage[node]
+	if !ok {
+		return
+	}
+	if stage.hasTokens {
+		value := stage.tokens
+		metrics.TokenCount = &value
+	}
+	if stage.hasCost {
+		value := stage.cost
+		metrics.Cost = &value
+	}
+}
+
+func workflowRunCost(run dbgen.WorkflowRun, usage map[string]workflowStageUsage) map[string]interface{} {
+	result := map[string]interface{}{}
+	var tokens int
+	var cost float32
+	knownTokens, knownCost := false, false
+	for _, stage := range usage {
+		if stage.hasTokens {
+			tokens += stage.tokens
+			knownTokens = true
+		}
+		if stage.hasCost {
+			cost += stage.cost
+			knownCost = true
+		}
+	}
+	if knownTokens {
+		result["tokenCount"] = tokens
+	}
+	if knownCost {
+		result["costUsd"] = cost
+	}
+	if run.StartedAt.Valid {
+		end := run.CompletedAt
+		if !end.Valid {
+			end = run.UpdatedAt
+		}
+		if end.Valid {
+			result["durationSeconds"] = end.Time.Sub(run.StartedAt.Time).Seconds()
+		}
+	}
+	return result
 }
 
 func findWorkflowNode(nodes []dbgen.WorkflowNodeRun, key string) dbgen.WorkflowNodeRun {
@@ -669,13 +808,29 @@ func workflowEventsToAPI(rows []dbgen.WorkflowEvent) []WorkflowEvent {
 func workflowArtifactsToAPI(rows []dbgen.WorkflowArtifact) []WorkflowArtifact {
 	items := make([]WorkflowArtifact, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, WorkflowArtifact{
+		item := WorkflowArtifact{
 			Id: row.ID, RunId: row.RunID, NodeKey: row.NodeKey, ArtifactType: row.ArtifactType,
 			ArtifactId: row.ArtifactID, Title: row.Title, Metadata: jsonObject(row.Metadata),
 			CreatedAt: row.CreatedAt.Time,
-		})
+		}
+		if row.ParentArtifactID.Valid {
+			value := row.ParentArtifactID.UUID
+			item.ParentArtifactId = &value
+		}
+		if row.SnapshotID.Valid {
+			value := row.SnapshotID.UUID
+			item.SnapshotId = &value
+		}
+		items = append(items, item)
 	}
 	return items
+}
+
+func workflowSnapshotToAPI(row dbgen.WorkflowSnapshot) WorkflowSnapshot {
+	return WorkflowSnapshot{
+		Id: row.ID, RunId: row.RunID, Kind: WorkflowSnapshotKind(row.Kind),
+		Payload: jsonObject(row.Payload), Sha256: row.Sha256, CreatedAt: row.CreatedAt.Time,
+	}
 }
 
 func jsonObject(raw []byte) map[string]any {
