@@ -202,7 +202,7 @@ func (q *Queries) CreateWorkflowNodeRun(ctx context.Context, arg CreateWorkflowN
 const createWorkflowRun = `-- name: CreateWorkflowRun :one
 insert into workflow_runs (id, correlation_id, mode, start_node, status, metadata)
 values ($1, $2, $3, $4, 'queued', $5)
-returning id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at, trigger_type, parent_run_id, replay_from_node, replay_scope, input_snapshot_id, config_snapshot_id, summary, updated_at
+returning id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at, trigger_type, parent_run_id, replay_from_node, replay_scope, input_snapshot_id, config_snapshot_id, summary, updated_at, replay_key
 `
 
 type CreateWorkflowRunParams struct {
@@ -241,6 +241,7 @@ func (q *Queries) CreateWorkflowRun(ctx context.Context, arg CreateWorkflowRunPa
 		&i.ConfigSnapshotID,
 		&i.Summary,
 		&i.UpdatedAt,
+		&i.ReplayKey,
 	)
 	return i, err
 }
@@ -281,7 +282,7 @@ const finishWorkflowRun = `-- name: FinishWorkflowRun :one
 update workflow_runs
 set status = $2, error_message = $3, completed_at = now(), updated_at = now()
 where id = $1 and status not in ('completed', 'completed_empty', 'partial_failed', 'failed', 'cancelled')
-returning id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at, trigger_type, parent_run_id, replay_from_node, replay_scope, input_snapshot_id, config_snapshot_id, summary, updated_at
+returning id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at, trigger_type, parent_run_id, replay_from_node, replay_scope, input_snapshot_id, config_snapshot_id, summary, updated_at, replay_key
 `
 
 type FinishWorkflowRunParams struct {
@@ -312,6 +313,7 @@ func (q *Queries) FinishWorkflowRun(ctx context.Context, arg FinishWorkflowRunPa
 		&i.ConfigSnapshotID,
 		&i.Summary,
 		&i.UpdatedAt,
+		&i.ReplayKey,
 	)
 	return i, err
 }
@@ -340,7 +342,7 @@ func (q *Queries) GetWorkflowNodeRun(ctx context.Context, id uuid.UUID) (Workflo
 }
 
 const getWorkflowRun = `-- name: GetWorkflowRun :one
-select id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at, trigger_type, parent_run_id, replay_from_node, replay_scope, input_snapshot_id, config_snapshot_id, summary, updated_at from workflow_runs where id = $1
+select id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at, trigger_type, parent_run_id, replay_from_node, replay_scope, input_snapshot_id, config_snapshot_id, summary, updated_at, replay_key from workflow_runs where id = $1
 `
 
 func (q *Queries) GetWorkflowRun(ctx context.Context, id uuid.UUID) (WorkflowRun, error) {
@@ -365,6 +367,7 @@ func (q *Queries) GetWorkflowRun(ctx context.Context, id uuid.UUID) (WorkflowRun
 		&i.ConfigSnapshotID,
 		&i.Summary,
 		&i.UpdatedAt,
+		&i.ReplayKey,
 	)
 	return i, err
 }
@@ -623,7 +626,7 @@ func (q *Queries) ListWorkflowRawItems(ctx context.Context, correlationID uuid.N
 }
 
 const listWorkflowRuns = `-- name: ListWorkflowRuns :many
-select id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at, trigger_type, parent_run_id, replay_from_node, replay_scope, input_snapshot_id, config_snapshot_id, summary, updated_at from workflow_runs order by created_at desc limit $1
+select id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at, trigger_type, parent_run_id, replay_from_node, replay_scope, input_snapshot_id, config_snapshot_id, summary, updated_at, replay_key from workflow_runs order by created_at desc limit $1
 `
 
 func (q *Queries) ListWorkflowRuns(ctx context.Context, limit int32) ([]WorkflowRun, error) {
@@ -654,6 +657,7 @@ func (q *Queries) ListWorkflowRuns(ctx context.Context, limit int32) ([]Workflow
 			&i.ConfigSnapshotID,
 			&i.Summary,
 			&i.UpdatedAt,
+			&i.ReplayKey,
 		); err != nil {
 			return nil, err
 		}
@@ -698,7 +702,7 @@ const markWorkflowRunSucceeded = `-- name: MarkWorkflowRunSucceeded :one
 update workflow_runs
 set status = 'completed', completed_at = now(), updated_at = now()
 where id = $1 and status in ('queued', 'running')
-returning id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at, trigger_type, parent_run_id, replay_from_node, replay_scope, input_snapshot_id, config_snapshot_id, summary, updated_at
+returning id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at, trigger_type, parent_run_id, replay_from_node, replay_scope, input_snapshot_id, config_snapshot_id, summary, updated_at, replay_key
 `
 
 func (q *Queries) MarkWorkflowRunSucceeded(ctx context.Context, id uuid.UUID) (WorkflowRun, error) {
@@ -723,6 +727,7 @@ func (q *Queries) MarkWorkflowRunSucceeded(ctx context.Context, id uuid.UUID) (W
 		&i.ConfigSnapshotID,
 		&i.Summary,
 		&i.UpdatedAt,
+		&i.ReplayKey,
 	)
 	return i, err
 }
@@ -731,7 +736,7 @@ const startWorkflowRun = `-- name: StartWorkflowRun :one
 update workflow_runs
 set status = 'running', started_at = coalesce(started_at, now())
 where id = $1 and status = 'queued'
-returning id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at, trigger_type, parent_run_id, replay_from_node, replay_scope, input_snapshot_id, config_snapshot_id, summary, updated_at
+returning id, correlation_id, mode, start_node, status, error_message, metadata, created_at, started_at, completed_at, trigger_type, parent_run_id, replay_from_node, replay_scope, input_snapshot_id, config_snapshot_id, summary, updated_at, replay_key
 `
 
 func (q *Queries) StartWorkflowRun(ctx context.Context, id uuid.UUID) (WorkflowRun, error) {
@@ -756,6 +761,7 @@ func (q *Queries) StartWorkflowRun(ctx context.Context, id uuid.UUID) (WorkflowR
 		&i.ConfigSnapshotID,
 		&i.Summary,
 		&i.UpdatedAt,
+		&i.ReplayKey,
 	)
 	return i, err
 }

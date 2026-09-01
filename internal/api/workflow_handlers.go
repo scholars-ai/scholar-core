@@ -16,7 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/scholars-ai/scholar-core/internal/db/dbgen"
-	"github.com/scholars-ai/scholar-core/internal/queue"
+	"github.com/scholars-ai/scholar-core/internal/workflow"
 )
 
 const workflowEventPageSize = int32(500)
@@ -36,67 +36,22 @@ func (h *Server) CreateWorkflowRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	runID := uuid.New()
-	var created dbgen.WorkflowRun
-	err := pgx.BeginFunc(r.Context(), h.pool, func(tx pgx.Tx) error {
-		qtx := h.q.WithTx(tx)
-		sourceIDs, err := workflowSourceIDs(r.Context(), qtx, req.SourceIds)
-		if err != nil {
-			return err
-		}
-		if len(sourceIDs) == 0 {
-			return errNoWorkflowSources
-		}
-
-		metadata := map[string]any{"sourceCount": len(sourceIDs), "sourceIds": sourceIDs}
-		if req.Metadata != nil {
-			for key, value := range *req.Metadata {
-				metadata[key] = value
-			}
-		}
-		metadataJSON, err := json.Marshal(metadata)
-		if err != nil {
-			return err
-		}
-		created, err = qtx.CreateWorkflowRun(r.Context(), dbgen.CreateWorkflowRunParams{
-			ID: runID, CorrelationID: runID, Mode: "cascade", StartNode: "source_fetch",
-			Metadata: metadataJSON,
-		})
-		if err != nil {
-			return err
-		}
-
-		messageIDs := make([]int64, 0, len(sourceIDs))
-		for _, sourceID := range sourceIDs {
-			messageID, err := queue.Send(r.Context(), tx, queue.SourceFetch,
-				buildWorkflowSourcePayload(sourceID, runID),
-				queue.WithCorrelation(runID), queue.WithTrigger("api"),
-			)
-			if err != nil {
-				return err
-			}
-			messageIDs = append(messageIDs, messageID)
-		}
-		payload, err := json.Marshal(map[string]any{
-			"sourceCount": len(sourceIDs), "messageIds": messageIDs,
-		})
-		if err != nil {
-			return err
-		}
-		_, err = qtx.CreateWorkflowEvent(r.Context(), dbgen.CreateWorkflowEventParams{
-			RunID: runID, NodeKey: "source_fetch", EventType: "run_created", Status: "queued",
-			Message: "工作流已创建，采集任务已入队", Payload: payload,
-		})
-		return err
-	})
-	if errors.Is(err, errNoWorkflowSources) {
-		writeError(w, http.StatusConflict, "no_enabled_sources", "没有可运行的已启用信源")
-		return
-	}
+	sourceIDs, err := workflowSourceIDs(r.Context(), h.q, req.SourceIds)
 	if errors.Is(err, errInvalidWorkflowSource) {
 		writeError(w, http.StatusBadRequest, "invalid_source", "sourceIds 包含不存在、已停用或已归档的信源")
 		return
 	}
+	if err != nil {
+		h.internalError(w, "resolve workflow sources", err)
+		return
+	}
+	metadata := map[string]any{}
+	if req.Metadata != nil {
+		metadata = *req.Metadata
+	}
+	created, err := workflow.New(h.pool, h.log).CreateContentRun(r.Context(), workflow.CreateOptions{
+		TriggerType: "manual", SourceIDs: sourceIDs, Metadata: metadata,
+	})
 	if err != nil {
 		h.internalError(w, "create workflow run", err)
 		return
@@ -105,7 +60,6 @@ func (h *Server) CreateWorkflowRun(w http.ResponseWriter, r *http.Request) {
 }
 
 var (
-	errNoWorkflowSources     = errors.New("workflow has no enabled sources")
 	errInvalidWorkflowSource = errors.New("invalid workflow source")
 )
 
@@ -254,46 +208,17 @@ func (h *Server) ReplayWorkflowRun(w http.ResponseWriter, r *http.Request, runID
 		writeError(w, http.StatusBadRequest, "invalid_node", "unknown workflow node")
 		return
 	}
-	parent, err := h.q.GetWorkflowRun(r.Context(), runID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, http.StatusNotFound, "not_found", "workflow run not found")
-		return
-	}
-	if err != nil {
-		h.internalError(w, "get replay parent", err)
-		return
-	}
-	childID := uuid.New()
-	scope, _ := json.Marshal(req.ReplayScope)
-	metadata := jsonObject(parent.Metadata)
-	metadata["parentRunId"] = runID.String()
-	if req.Reason != nil {
-		metadata["replayReason"] = *req.Reason
-	}
+	var overrides map[string]any
 	if req.ConfigOverrides != nil {
-		metadata["configOverrides"] = *req.ConfigOverrides
+		overrides = *req.ConfigOverrides
 	}
-	metadataJSON, _ := json.Marshal(metadata)
-	err = pgx.BeginFunc(r.Context(), h.pool, func(tx pgx.Tx) error {
-		_, err := tx.Exec(r.Context(), `insert into workflow_runs
-            (id, correlation_id, mode, start_node, status, metadata, trigger_type, parent_run_id, replay_from_node, replay_scope, input_snapshot_id, config_snapshot_id)
-            values ($1, $2, 'content_production', $3, 'queued', $4, 'replay', $5, $3, $6, $7, $8)`,
-			childID, childID, string(req.ReplayFromNode), metadataJSON, runID, scope,
-			parent.InputSnapshotID, parent.ConfigSnapshotID)
-		if err != nil {
-			return err
+	child, err := workflow.New(h.pool, h.log).CreateReplay(r.Context(), runID, req.ReplayScope, string(req.ReplayFromNode), req.Reason, overrides)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "workflow run not found")
+			return
 		}
-		_, err = tx.Exec(r.Context(), `insert into workflow_events (run_id, node_key, event_type, status, message, payload)
-            values ($1, $2, 'run_created', 'queued', 'replay 工作流已创建', $3)`, childID, string(req.ReplayFromNode), scope)
-		return err
-	})
-	if err != nil {
-		h.internalError(w, "create replay workflow run", err)
-		return
-	}
-	child, err := h.q.GetWorkflowRun(r.Context(), childID)
-	if err != nil {
-		h.internalError(w, "get replay workflow run", err)
+		writeError(w, http.StatusBadRequest, "invalid_replay", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusAccepted, workflowRunToAPI(child))
@@ -573,8 +498,27 @@ func compareWorkflowRuns(base, other dbgen.WorkflowRun, baseDecisions, otherDeci
 		}
 		stageCounts[set.name] = counts
 	}
+	stageCounts["baseRun"] = runComparisonSummary(base)
+	stageCounts["otherRun"] = runComparisonSummary(other)
 	sameInput := base.InputSnapshotID.Valid && other.InputSnapshotID.Valid && base.InputSnapshotID.UUID == other.InputSnapshotID.UUID
 	return WorkflowRunComparison{BaseRunId: base.ID, OtherRunId: other.ID, SameInput: sameInput, Stages: stageCounts, ReasonCounts: reasonCounts}
+}
+
+func runComparisonSummary(run dbgen.WorkflowRun) map[string]interface{} {
+	result := map[string]interface{}{"status": run.Status}
+	if run.StartedAt.Valid {
+		end := run.CompletedAt
+		if !end.Valid {
+			end = run.UpdatedAt
+		}
+		if end.Valid {
+			result["durationSeconds"] = end.Time.Sub(run.StartedAt.Time).Seconds()
+		}
+	}
+	if len(run.Summary) > 0 {
+		result["summary"] = jsonObject(run.Summary)
+	}
+	return result
 }
 
 func workflowEventsToAPI(rows []dbgen.WorkflowEvent) []WorkflowEvent {

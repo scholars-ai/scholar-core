@@ -26,6 +26,7 @@ import (
 	"github.com/scholars-ai/scholar-core/internal/pipeline"
 	"github.com/scholars-ai/scholar-core/internal/queue"
 	"github.com/scholars-ai/scholar-core/internal/telemetry"
+	"github.com/scholars-ai/scholar-core/internal/workflow"
 )
 
 // Settings 镜像 shared 的 SchedulerSettings schema（jsonb 整体存取，API 层已校验）。
@@ -176,9 +177,10 @@ func (s *Scheduler) tickContentWorkflow(ctx context.Context, settings Settings) 
 	}
 	now := s.now().UTC()
 	planned := now.Truncate(time.Duration(hours) * time.Hour)
+	var scheduleID uuid.UUID
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		qtx := s.q.WithTx(tx)
-		scheduleID, err := qtx.RecordScheduleRun(ctx, dbgen.RecordScheduleRunParams{
+		id, err := qtx.RecordScheduleRun(ctx, dbgen.RecordScheduleRunParams{
 			ScheduleKey: "content_production_workflow",
 			PlannedAt:   pgtype.Timestamptz{Time: planned, Valid: true},
 			Queue:       string(queue.SourceFetch),
@@ -190,43 +192,27 @@ func (s *Scheduler) tickContentWorkflow(ctx context.Context, settings Settings) 
 		if err != nil {
 			return err
 		}
-		sources, err := qtx.ListEnabledSourceIDs(ctx)
-		if err != nil {
-			return err
-		}
-		runID := uuid.New()
-		metadata, _ := json.Marshal(map[string]any{"sourceCount": len(sources), "sourceIds": sources, "scheduleRunId": scheduleID})
-		run, err := qtx.CreateWorkflowRun(ctx, dbgen.CreateWorkflowRunParams{ID: runID, CorrelationID: runID, Mode: "content_production", StartNode: "source_fetch", Metadata: metadata})
-		if err != nil {
-			return err
-		}
-		_ = run
-		if len(sources) == 0 {
-			_, err = tx.Exec(ctx, "update workflow_runs set status = 'completed_empty', completed_at = now(), updated_at = now(), summary = $2::jsonb where id = $1", runID, `{"reason":"no_enabled_sources"}`)
-			return err
-		}
-		config, _ := json.Marshal(map[string]any{"intervalHours": hours})
-		if _, err := qtx.CreateWorkflowNodeRun(ctx, dbgen.CreateWorkflowNodeRunParams{RunID: runID, NodeKey: "source_fetch", ConfigSnapshot: config}); err != nil {
-			return err
-		}
-		payload, _ := json.Marshal(map[string]any{"sourceIds": sources, "workflowRunId": runID.String(), "cascade": true})
-		if _, err := qtx.CreateWorkflowEvent(ctx, dbgen.CreateWorkflowEventParams{RunID: runID, NodeKey: "source_fetch", EventType: "run_created", Status: "queued", Message: "定时内容生产工作流已创建", Payload: payload}); err != nil {
-			return err
-		}
-		for _, sourceID := range sources {
-			msgID, err := queue.Send(ctx, tx, queue.SourceFetch, buildWorkflowSourcePayload(sourceID, runID), queue.WithCorrelation(runID), queue.WithTrigger("scheduler"))
-			if err != nil {
-				return err
-			}
-			if err := setScheduleRunMsg(ctx, tx, scheduleID, msgID); err != nil {
-				return err
-			}
-		}
+		scheduleID = id
 		return nil
 	})
 	if err != nil {
 		s.log.Error("enqueue content workflow failed", "error", err)
+		return
 	}
+	sources, err := s.q.ListEnabledSourceIDs(ctx)
+	if err != nil {
+		s.log.Error("list workflow sources failed", "error", err)
+		return
+	}
+	created, err := workflow.New(s.pool, s.log).CreateContentRun(ctx, workflow.CreateOptions{
+		TriggerType: "scheduled", SourceIDs: sources,
+		Metadata: map[string]any{"scheduleRunId": scheduleID, "intervalHours": hours},
+	})
+	if err != nil {
+		s.log.Error("create content workflow failed", "error", err)
+		return
+	}
+	s.log.Info("content workflow created", "run_id", created.ID, "schedule_run_id", scheduleID)
 }
 
 func buildWorkflowSourcePayload(sourceID, runID uuid.UUID) map[string]any {

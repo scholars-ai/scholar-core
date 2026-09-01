@@ -34,6 +34,7 @@ import (
 	"github.com/scholars-ai/scholar-core/internal/pipeline"
 	"github.com/scholars-ai/scholar-core/internal/queue"
 	"github.com/scholars-ai/scholar-core/internal/telemetry"
+	"github.com/scholars-ai/scholar-core/internal/workflow"
 )
 
 // 分档阈值（SPEC-004 §2）：>=75 推荐、60–75 备选、<60 自动 rejected。
@@ -50,10 +51,11 @@ type Harvester struct {
 	q    *dbgen.Queries
 	log  *slog.Logger
 	now  func() time.Time
+	rt   *workflow.Runtime
 }
 
 func New(pool *pgxpool.Pool, log *slog.Logger) *Harvester {
-	return &Harvester{pool: pool, q: dbgen.New(pool), log: log, now: time.Now}
+	return &Harvester{pool: pool, q: dbgen.New(pool), log: log, now: time.Now, rt: workflow.New(pool, log)}
 }
 
 func (h *Harvester) Run(ctx context.Context, interval time.Duration) {
@@ -82,6 +84,9 @@ func (h *Harvester) Tick(ctx context.Context) {
 		telemetry.RecordHarvesterTick(ctx, time.Since(started), "ok")
 		span.End()
 	}()
+	if err := h.rt.ReconcileAll(ctx); err != nil {
+		h.log.Error("workflow reconcile failed", "error", err)
+	}
 	h.enqueueEvaluations(ctx)
 	h.transitionScored(ctx)
 	h.enqueueWriting(ctx)
@@ -613,6 +618,12 @@ func (h *Harvester) finishWorkflowRuns(ctx context.Context) {
 		return
 	}
 	for _, run := range runs {
+		// SPEC-010 content_production runs are closed exclusively by the
+		// workflow runtime barriers. The legacy cascade finisher cannot infer
+		// dynamic funnel completion and must never overwrite those states.
+		if run.Mode == "content_production" {
+			continue
+		}
 		if run.Status != "queued" && run.Status != "running" {
 			continue
 		}

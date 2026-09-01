@@ -877,6 +877,7 @@ type WorkflowRun struct {
 	ConfigSnapshotID uuid.NullUUID      `json:"config_snapshot_id"`
 	Summary          []byte             `json:"summary"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	ReplayKey        pgtype.Text        `json:"replay_key"`
 }
 
 type WorkflowSnapshot struct {

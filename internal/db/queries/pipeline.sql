@@ -2,7 +2,15 @@
 -- harvester：等待投递评分的 candidate（事件驱动，SPEC-008 §3.1 纪律 2）。
 -- 用 schedule_runs 的唯一约束防重投，此处只取状态。
 select id, title, correlation_id
-from topics where status = 'candidate' order by created_at limit $1;
+from topics
+where status = 'candidate'
+  and not exists (
+      select 1 from workflow_runs wr
+      where wr.correlation_id = topics.correlation_id
+        and wr.mode = 'content_production'
+        and wr.status not in ('completed', 'completed_empty', 'partial_failed', 'failed', 'cancelled')
+  )
+order by created_at limit $1;
 
 -- name: LatestEvaluation :one
 -- harvester：收割某选题最近一次评分
@@ -18,6 +26,12 @@ join lateral (
     where topic_id = t.id order by created_at desc limit 1
 ) e on true
 where t.status = 'candidate'
+  and not exists (
+      select 1 from workflow_runs wr
+      where wr.correlation_id = t.correlation_id
+        and wr.mode = 'content_production'
+        and wr.status not in ('completed', 'completed_empty', 'partial_failed', 'failed', 'cancelled')
+  )
 limit $1;
 
 -- name: PendingApprovedTopics :many
@@ -25,6 +39,12 @@ limit $1;
 select id, title, target_platforms, correlation_id
 from topics
 where status = 'approved'
+  and not exists (
+      select 1 from workflow_runs wr
+      where wr.correlation_id = topics.correlation_id
+        and wr.mode = 'content_production'
+        and wr.status not in ('completed', 'completed_empty', 'partial_failed', 'failed', 'cancelled')
+  )
 order by updated_at, id
 limit $1;
 
@@ -84,6 +104,12 @@ select a.id, a.topic_id, a.platform, t.correlation_id
 from articles a
 join topics t on t.id = a.topic_id
 where a.status = 'draft'
+  and not exists (
+      select 1 from workflow_runs wr
+      where wr.correlation_id = t.correlation_id
+        and wr.mode = 'content_production'
+        and wr.status not in ('completed', 'completed_empty', 'partial_failed', 'failed', 'cancelled')
+  )
 order by a.created_at, a.id
 limit $1;
 
@@ -118,6 +144,12 @@ join lateral (
     limit 1
 ) e on true
 where a.status = 'draft'
+  and not exists (
+      select 1 from workflow_runs wr
+      where wr.correlation_id = t.correlation_id
+        and wr.mode = 'content_production'
+        and wr.status not in ('completed', 'completed_empty', 'partial_failed', 'failed', 'cancelled')
+  )
 order by a.updated_at, a.id
 limit $1;
 
@@ -137,6 +169,12 @@ join lateral (
     limit 1
 ) e on true
 where a.status = 'scored'
+  and not exists (
+      select 1 from workflow_runs wr
+      where wr.correlation_id = t.correlation_id
+        and wr.mode = 'content_production'
+        and wr.status not in ('completed', 'completed_empty', 'partial_failed', 'failed', 'cancelled')
+  )
 order by a.updated_at, a.id
 limit $1;
 
