@@ -69,92 +69,13 @@ type CreateOptions struct {
 // CreateContentRun creates a run and its source fan-out atomically. An empty
 // source set is a valid run and is completed_empty with a diagnostic summary.
 func (rt *Runtime) CreateContentRun(ctx context.Context, opts CreateOptions) (dbgen.WorkflowRun, error) {
-	if opts.TriggerType == "" {
-		opts.TriggerType = "manual"
-	}
-	if opts.StartNode == "" {
-		opts.StartNode = "source_fetch"
-	}
-	if err := validateNode(opts.StartNode); err != nil {
+	var err error
+	if opts, err = normalizeCreateOptions(opts, "manual"); err != nil {
 		return dbgen.WorkflowRun{}, err
 	}
 	runID := uuid.New()
-	err := pgx.BeginFunc(ctx, rt.pool, func(tx pgx.Tx) error {
-		qtx := dbgen.New(tx)
-		metadata := cloneMap(opts.Metadata)
-		metadata["sourceCount"] = len(opts.SourceIDs)
-		metadata["sourceIds"] = opts.SourceIDs
-		metadata["workflowVersion"] = workflowVersion
-		if opts.ScheduleRunID != nil {
-			metadata["scheduleRunId"] = opts.ScheduleRunID
-		}
-		metadataJSON, err := json.Marshal(metadata)
-		if err != nil {
-			return err
-		}
-		if _, err := qtx.CreateWorkflowRun(ctx, dbgen.CreateWorkflowRunParams{
-			ID: runID, CorrelationID: runID, Mode: workflowMode,
-			StartNode: opts.StartNode, Metadata: metadataJSON,
-		}); err != nil {
-			return err
-		}
-		if err := rt.updateRunMetadata(ctx, tx, runID, opts); err != nil {
-			return err
-		}
-		definitionID, err := rt.createSnapshot(ctx, qtx, runID, "definition", definitionPayload())
-		if err != nil {
-			return err
-		}
-		_ = definitionID
-		var inputID uuid.UUID
-		if opts.InputSnapshotID != nil {
-			inputID = *opts.InputSnapshotID
-		} else {
-			inputPayload, _ := json.Marshal(map[string]any{
-				"sourceIds": opts.SourceIDs, "triggerType": opts.TriggerType,
-			})
-			inputID, err = rt.createSnapshot(ctx, qtx, runID, "input", inputPayload)
-			if err != nil {
-				return err
-			}
-		}
-		configPayload, _ := json.Marshal(map[string]any{
-			"workflowVersion": workflowVersion, "triggerType": opts.TriggerType,
-			"overrides": cloneMap(opts.ConfigOverrides),
-		})
-		configID, err := rt.createSnapshot(ctx, qtx, runID, "config", configPayload)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `update workflow_runs
-            set input_snapshot_id = $2, config_snapshot_id = $3, updated_at = now()
-            where id = $1`, runID, inputID, configID); err != nil {
-			return err
-		}
-		if err := rt.initializeNodes(ctx, tx, qtx, runID, opts.StartNode, configPayload, nil); err != nil {
-			return err
-		}
-		if opts.StartNode == "source_fetch" {
-			if _, err := tx.Exec(ctx, `update workflow_node_runs set input_snapshot_id = $2 where run_id = $1 and node_key = 'source_fetch'`, runID, inputID); err != nil {
-				return err
-			}
-		}
-		if len(opts.SourceIDs) == 0 {
-			return rt.completeEmpty(ctx, tx, runID, "no_enabled_sources")
-		}
-		if opts.StartNode != "source_fetch" {
-			return rt.enqueueReplayStart(ctx, tx, qtx, runID, opts.StartNode, opts.ReplayScope)
-		}
-		for _, sourceID := range uniqueUUIDs(opts.SourceIDs) {
-			if _, err := queue.Send(ctx, tx, queue.SourceFetch,
-				map[string]any{"sourceId": sourceID, "workflowRunId": runID, "cascade": true},
-				queue.WithCorrelation(runID), queue.WithTrigger(opts.TriggerType)); err != nil {
-				return err
-			}
-		}
-		return rt.appendEvent(ctx, qtx, runID, "source_fetch", "run_created", "queued", "工作流已创建，采集任务已入队", map[string]any{
-			"sourceCount": len(uniqueUUIDs(opts.SourceIDs)),
-		})
+	err = pgx.BeginFunc(ctx, rt.pool, func(tx pgx.Tx) error {
+		return rt.createContentRunTx(ctx, tx, runID, opts)
 	})
 	if err != nil {
 		return dbgen.WorkflowRun{}, err
@@ -162,11 +83,142 @@ func (rt *Runtime) CreateContentRun(ctx context.Context, opts CreateOptions) (db
 	return rt.q.GetWorkflowRun(ctx, runID)
 }
 
+// CreateScheduledContentRun atomically records the scheduler slot and creates
+// the corresponding WorkflowRun and initial queue fan-out. created=false means
+// this interval was already claimed by another scheduler instance.
+func (rt *Runtime) CreateScheduledContentRun(ctx context.Context, opts CreateOptions, scheduleKey string, plannedAt time.Time, note string) (run dbgen.WorkflowRun, created bool, err error) {
+	if opts, err = normalizeCreateOptions(opts, "scheduled"); err != nil {
+		return dbgen.WorkflowRun{}, false, err
+	}
+	runID := uuid.New()
+	err = pgx.BeginFunc(ctx, rt.pool, func(tx pgx.Tx) error {
+		qtx := dbgen.New(tx)
+		scheduleID, scheduleErr := qtx.RecordScheduleRun(ctx, dbgen.RecordScheduleRunParams{
+			ScheduleKey: scheduleKey,
+			PlannedAt:   pgtype.Timestamptz{Time: plannedAt, Valid: true},
+			Queue:       string(queue.SourceFetch),
+			Note:        pgtype.Text{String: note, Valid: note != ""},
+		})
+		if errors.Is(scheduleErr, pgx.ErrNoRows) {
+			return errScheduleAlreadyClaimed
+		}
+		if scheduleErr != nil {
+			return scheduleErr
+		}
+		opts.ScheduleRunID = &scheduleID
+		return rt.createContentRunTx(ctx, tx, runID, opts)
+	})
+	if errors.Is(err, errScheduleAlreadyClaimed) {
+		return dbgen.WorkflowRun{}, false, nil
+	}
+	if err != nil {
+		return dbgen.WorkflowRun{}, false, err
+	}
+	run, err = rt.q.GetWorkflowRun(ctx, runID)
+	return run, err == nil, err
+}
+
+var errScheduleAlreadyClaimed = errors.New("workflow schedule interval already claimed")
+
+func normalizeCreateOptions(opts CreateOptions, defaultTrigger string) (CreateOptions, error) {
+	if strings.TrimSpace(opts.TriggerType) == "" {
+		opts.TriggerType = defaultTrigger
+	}
+	if strings.TrimSpace(opts.StartNode) == "" {
+		opts.StartNode = nodeOrder[0]
+	}
+	if err := validateNode(opts.StartNode); err != nil {
+		return CreateOptions{}, err
+	}
+	return opts, nil
+}
+
+func (rt *Runtime) createContentRunTx(ctx context.Context, tx pgx.Tx, runID uuid.UUID, opts CreateOptions) error {
+	qtx := dbgen.New(tx)
+	metadata := cloneMap(opts.Metadata)
+	metadata["sourceCount"] = len(opts.SourceIDs)
+	metadata["sourceIds"] = opts.SourceIDs
+	metadata["workflowVersion"] = workflowVersion
+	if opts.ScheduleRunID != nil {
+		metadata["scheduleRunId"] = opts.ScheduleRunID
+	}
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	if _, err := qtx.CreateWorkflowRun(ctx, dbgen.CreateWorkflowRunParams{
+		ID: runID, CorrelationID: runID, Mode: workflowMode,
+		StartNode: opts.StartNode, Metadata: metadataJSON,
+	}); err != nil {
+		return err
+	}
+	if err := rt.updateRunMetadata(ctx, tx, runID, opts); err != nil {
+		return err
+	}
+	definitionID, err := rt.createSnapshot(ctx, qtx, runID, "definition", definitionPayload())
+	if err != nil {
+		return err
+	}
+	_ = definitionID
+	var inputID uuid.UUID
+	if opts.InputSnapshotID != nil {
+		inputID = *opts.InputSnapshotID
+	} else {
+		inputPayload, _ := json.Marshal(map[string]any{
+			"sourceIds": opts.SourceIDs, "triggerType": opts.TriggerType,
+		})
+		inputID, err = rt.createSnapshot(ctx, qtx, runID, "input", inputPayload)
+		if err != nil {
+			return err
+		}
+	}
+	configPayload, _ := json.Marshal(map[string]any{
+		"workflowVersion": workflowVersion, "triggerType": opts.TriggerType,
+		"overrides": cloneMap(opts.ConfigOverrides),
+	})
+	configID, err := rt.createSnapshot(ctx, qtx, runID, "config", configPayload)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `update workflow_runs
+            set input_snapshot_id = $2, config_snapshot_id = $3, updated_at = now()
+            where id = $1`, runID, inputID, configID); err != nil {
+		return err
+	}
+	if err := rt.initializeNodes(ctx, tx, qtx, runID, opts.StartNode, configPayload, nil); err != nil {
+		return err
+	}
+	if opts.StartNode == "source_fetch" {
+		if _, err := tx.Exec(ctx, `update workflow_node_runs set input_snapshot_id = $2 where run_id = $1 and node_key = 'source_fetch'`, runID, inputID); err != nil {
+			return err
+		}
+	}
+	if len(opts.SourceIDs) == 0 {
+		return rt.completeEmpty(ctx, tx, runID, "no_enabled_sources")
+	}
+	if opts.StartNode != "source_fetch" {
+		return rt.enqueueReplayStart(ctx, tx, qtx, runID, opts.StartNode, opts.ReplayScope)
+	}
+	for _, sourceID := range uniqueUUIDs(opts.SourceIDs) {
+		if _, err := queue.Send(ctx, tx, queue.SourceFetch,
+			map[string]any{"sourceId": sourceID, "workflowRunId": runID, "cascade": true},
+			queue.WithCorrelation(runID), queue.WithTrigger(opts.TriggerType)); err != nil {
+			return err
+		}
+	}
+	return rt.appendEvent(ctx, qtx, runID, "source_fetch", "run_created", "queued", "工作流已创建，采集任务已入队", map[string]any{
+		"sourceCount": len(uniqueUUIDs(opts.SourceIDs)),
+	})
+}
+
 // CreateReplay creates an immutable child run and immediately queues the
 // requested start node. Identical parent/node/scope/config requests are
 // idempotent through replay_key.
 func (rt *Runtime) CreateReplay(ctx context.Context, parentID uuid.UUID, scope map[string]any, fromNode string, reason *string, overrides map[string]any) (dbgen.WorkflowRun, error) {
 	if err := validateNode(fromNode); err != nil {
+		return dbgen.WorkflowRun{}, err
+	}
+	if err := validateReplayScope(scope); err != nil {
 		return dbgen.WorkflowRun{}, err
 	}
 	parent, err := rt.q.GetWorkflowRun(ctx, parentID)
@@ -181,6 +233,9 @@ func (rt *Runtime) CreateReplay(ctx context.Context, parentID uuid.UUID, scope m
 	hash := sha256.Sum256(keyBytes)
 	replayKey := hex.EncodeToString(hash[:])
 	childID := uuid.New()
+	replayScope := cloneMap(scope)
+	replayScope["configOverrides"] = cloneMap(overrides)
+	replayScope["replayFromNode"] = fromNode
 	err = pgx.BeginFunc(ctx, rt.pool, func(tx pgx.Tx) error {
 		qtx := dbgen.New(tx)
 		var inserted uuid.UUID
@@ -192,7 +247,7 @@ func (rt *Runtime) CreateReplay(ctx context.Context, parentID uuid.UUID, scope m
             on conflict (replay_key) do nothing
             returning id`, childID, workflowMode, fromNode,
 			jsonString(map[string]any{"parentRunId": parentID, "replayReason": deref(reason), "workflowVersion": workflowVersion}),
-			parentID, jsonString(scope), nullableUUID(parent.InputSnapshotID), replayKey)
+			parentID, jsonString(replayScope), nullableUUID(parent.InputSnapshotID), replayKey)
 		if err := row.Scan(&inserted); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				if err := tx.QueryRow(ctx, `select id from workflow_runs where replay_key = $1`, replayKey).Scan(&inserted); err != nil {
@@ -220,6 +275,11 @@ func (rt *Runtime) CreateReplay(ctx context.Context, parentID uuid.UUID, scope m
 		}
 		if err := rt.initializeNodes(ctx, tx, qtx, inserted, fromNode, configPayload, parentNode); err != nil {
 			return err
+		}
+		if replayMode(scope) == "evaluate_only" {
+			if err := rt.skipReplayDownstream(ctx, tx, inserted, fromNode); err != nil {
+				return err
+			}
 		}
 		if fromNode == "source_fetch" && parent.InputSnapshotID.Valid {
 			if _, err := tx.Exec(ctx, `update workflow_node_runs set input_snapshot_id = $2 where run_id = $1 and node_key = 'source_fetch'`, inserted, parent.InputSnapshotID.UUID); err != nil {
@@ -306,7 +366,7 @@ func (rt *Runtime) enqueueReplayStart(ctx context.Context, tx pgx.Tx, qtx *dbgen
 		return rt.completeEmpty(ctx, tx, runID, "replay_input_empty")
 	}
 	if startNode == "topic_scout" {
-		payload := map[string]any{"workflowRunId": runID, "rawItemIds": ids, "cascade": true}
+		payload := rt.replayPayload(ctx, tx, runID, map[string]any{"workflowRunId": runID, "rawItemIds": ids, "cascade": true})
 		if _, err := queue.Send(ctx, tx, queue.TopicScout, payload, queue.WithCorrelation(runID), queue.WithTrigger("replay")); err != nil {
 			return err
 		}
@@ -314,7 +374,7 @@ func (rt *Runtime) enqueueReplayStart(ctx context.Context, tx pgx.Tx, qtx *dbgen
 	}
 	for _, id := range ids {
 		var q queue.Name
-		payload := map[string]any{"workflowRunId": runID}
+		payload := rt.replayPayload(ctx, tx, runID, map[string]any{"workflowRunId": runID})
 		switch startNode {
 		case "source_fetch":
 			q = queue.SourceFetch
@@ -366,12 +426,7 @@ func (rt *Runtime) replayInputIDs(ctx context.Context, tx pgx.Tx, runID uuid.UUI
 		"article_write": "topicIds", "article_evaluate": "articleIds", "human_review": "articleIds",
 	}[startNode]
 	index := nodeIndex(startNode)
-	var snapshotID uuid.NullUUID
-	if index == 0 {
-		err = tx.QueryRow(ctx, `select input_snapshot_id from workflow_runs where id = $1`, parentID).Scan(&snapshotID)
-	} else {
-		err = tx.QueryRow(ctx, `select output_snapshot_id from workflow_node_runs where run_id = $1 and node_key = $2`, parentID, nodeOrder[index-1]).Scan(&snapshotID)
-	}
+	snapshotID, err := rt.replaySourceSnapshot(ctx, tx, parentID, index)
 	if err != nil {
 		return nil, err
 	}
@@ -390,7 +445,7 @@ func (rt *Runtime) replayInputIDs(ctx context.Context, tx pgx.Tx, runID uuid.UUI
 	if selected := parseUUIDs(scope["itemIds"]); len(selected) > 0 {
 		ids = intersectUUIDs(ids, selected)
 	}
-	if strings.EqualFold(fmt.Sprint(scope["mode"]), "failed_items") {
+	if replayMode(scope) == "failed_items" {
 		failed, err := rt.failedDecisionItems(ctx, tx, parentID, startNode)
 		if err != nil {
 			return nil, err
@@ -400,12 +455,101 @@ func (rt *Runtime) replayInputIDs(ctx context.Context, tx pgx.Tx, runID uuid.UUI
 	return ids, nil
 }
 
+// replaySourceSnapshot walks the selected parent and its ancestors, preferring
+// the nearest run that actually produced the input needed by the replay node.
+// Replay runs may skip upstream nodes, so using only the root run would lose
+// the most recent generated article/topic outputs.
+func (rt *Runtime) replaySourceSnapshot(ctx context.Context, tx pgx.Tx, parentID uuid.UUID, startIndex int) (uuid.NullUUID, error) {
+	var snapshot uuid.NullUUID
+	var err error
+	if startIndex == 0 {
+		err = tx.QueryRow(ctx, `
+            with recursive ancestors as (
+                select id, parent_run_id, 0 as depth from workflow_runs where id = $1
+                union all
+                select wr.id, wr.parent_run_id, a.depth + 1
+                from workflow_runs wr join ancestors a on wr.id = a.parent_run_id
+            )
+            select wr.input_snapshot_id
+            from ancestors a join workflow_runs wr on wr.id = a.id
+            where wr.input_snapshot_id is not null
+            order by a.depth asc limit 1`, parentID).Scan(&snapshot)
+	} else {
+		err = tx.QueryRow(ctx, `
+            with recursive ancestors as (
+                select id, parent_run_id, 0 as depth from workflow_runs where id = $1
+                union all
+                select wr.id, wr.parent_run_id, a.depth + 1
+                from workflow_runs wr join ancestors a on wr.id = a.parent_run_id
+            )
+            select wnr.output_snapshot_id
+            from ancestors a
+            join workflow_node_runs wnr on wnr.run_id = a.id and wnr.node_key = $2
+            where wnr.output_snapshot_id is not null
+            order by a.depth asc limit 1`, parentID, nodeOrder[startIndex-1]).Scan(&snapshot)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.NullUUID{}, nil
+	}
+	return snapshot, err
+}
+
+func validateReplayScope(scope map[string]any) error {
+	mode := replayMode(scope)
+	switch mode {
+	case "full", "failed_items", "selected_items", "evaluate_only":
+	default:
+		return fmt.Errorf("unsupported replay scope mode %q", mode)
+	}
+	if mode == "selected_items" && len(parseUUIDs(scope["itemIds"])) == 0 {
+		return errors.New("selected_items replay requires non-empty itemIds")
+	}
+	return nil
+}
+
+func replayMode(scope map[string]any) string {
+	if scope == nil {
+		return "full"
+	}
+	mode := strings.ToLower(strings.TrimSpace(fmt.Sprint(scope["mode"])))
+	if mode == "" {
+		return "full"
+	}
+	return mode
+}
+
+func (rt *Runtime) skipReplayDownstream(ctx context.Context, tx pgx.Tx, runID uuid.UUID, fromNode string) error {
+	start := nodeIndex(fromNode) + 1
+	for _, node := range nodeOrder[start:] {
+		if _, err := tx.Exec(ctx, `update workflow_node_runs
+            set status = 'skipped', completed_at = now(), counts = $3::jsonb
+            where run_id = $1 and node_key = $2`, runID, node, countsJSON(0, 0, 0, 1, 0, 0)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (rt *Runtime) replayPayload(ctx context.Context, tx pgx.Tx, runID uuid.UUID, payload map[string]any) map[string]any {
+	var raw []byte
+	if err := tx.QueryRow(ctx, `select replay_scope from workflow_runs where id = $1`, runID).Scan(&raw); err == nil {
+		payload["workflowConfigOverrides"] = map[string]any{}
+		var scope map[string]any
+		if json.Unmarshal(raw, &scope) == nil {
+			if overrides, ok := scope["configOverrides"].(map[string]any); ok {
+				payload["workflowConfigOverrides"] = overrides
+			}
+		}
+	}
+	return payload
+}
+
 func (rt *Runtime) failedDecisionItems(ctx context.Context, tx pgx.Tx, parentID uuid.UUID, node string) ([]uuid.UUID, error) {
 	itemType := "topic"
 	if node == "article_evaluate" || node == "human_review" {
 		itemType = "article"
 	}
-	rows, err := tx.Query(ctx, `select item_id from workflow_item_decisions where run_id = $1 and item_type = $2 and decision in ('failed', 'rejected')`, parentID, itemType)
+	rows, err := tx.Query(ctx, `select item_id from workflow_item_decisions where run_id = $1 and item_type = $2 and decision = 'failed'`, parentID, itemType)
 	if err != nil {
 		return nil, err
 	}
@@ -522,6 +666,9 @@ func (rt *Runtime) reconcileSourceFetch(ctx context.Context, tx pgx.Tx, runID uu
 		}
 		return true, rt.skipAfter(ctx, tx, runID, "source_fetch", "no_new_raw_items")
 	}
+	if rt.replayStopsAfter(ctx, tx, runID, "source_fetch") {
+		return true, rt.completeReplayOnly(ctx, tx, runID, "evaluate_only_source_fetch")
+	}
 	if err := rt.bindNextInput(ctx, tx, runID, "source_fetch", outputID); err != nil {
 		return false, err
 	}
@@ -560,6 +707,9 @@ func (rt *Runtime) reconcileTopicScout(ctx context.Context, tx pgx.Tx, runID uui
 			return true, rt.failRun(ctx, tx, runID, "topic_scout_failed")
 		}
 		return true, rt.skipAfter(ctx, tx, runID, "topic_scout", "scout_produced_no_topics")
+	}
+	if rt.replayStopsAfter(ctx, tx, runID, "topic_scout") {
+		return true, rt.completeReplayOnly(ctx, tx, runID, "evaluate_only_topic_scout")
 	}
 	if err := rt.bindNextInput(ctx, tx, runID, "topic_scout", outputID); err != nil {
 		return false, err
@@ -638,6 +788,9 @@ func (rt *Runtime) reconcileTopicEvaluate(ctx context.Context, tx pgx.Tx, runID 
 	if len(accepted) == 0 {
 		return true, rt.skipAfter(ctx, tx, runID, "topic_evaluate", "all_topics_rejected")
 	}
+	if rt.replayStopsAfter(ctx, tx, runID, "topic_evaluate") {
+		return true, rt.completeReplayOnly(ctx, tx, runID, "evaluate_only_topic_evaluate")
+	}
 	if err := rt.bindNextInput(ctx, tx, runID, "topic_evaluate", outputID); err != nil {
 		return false, err
 	}
@@ -688,6 +841,9 @@ func (rt *Runtime) reconcileArticleWrite(ctx context.Context, tx pgx.Tx, runID u
 	}
 	if len(articleIDs) == 0 {
 		return true, rt.skipAfter(ctx, tx, runID, "article_write", "all_writes_failed")
+	}
+	if rt.replayStopsAfter(ctx, tx, runID, "article_write") {
+		return true, rt.completeReplayOnly(ctx, tx, runID, "evaluate_only_article_write")
 	}
 	if err := rt.bindNextInput(ctx, tx, runID, "article_write", outputID); err != nil {
 		return false, err
@@ -744,6 +900,9 @@ func (rt *Runtime) reconcileArticleEvaluate(ctx context.Context, tx pgx.Tx, runI
 	if err := rt.updateNode(ctx, tx, node.id, status, outputID, countsJSON(len(articleIDs), len(accepted), len(articleIDs)-len(accepted), 0, failed, len(accepted))); err != nil {
 		return false, err
 	}
+	if rt.replayStopsAfter(ctx, tx, runID, "article_evaluate") {
+		return true, rt.completeReplayOnly(ctx, tx, runID, "evaluate_only_article_evaluate")
+	}
 	return true, rt.finishReviewStage(ctx, tx, runID, accepted, failed)
 }
 
@@ -784,7 +943,7 @@ func (rt *Runtime) ensureTopicEvaluateJobs(ctx context.Context, tx pgx.Tx, runID
 		if queued {
 			continue
 		}
-		payload := map[string]any{"topicId": topicID, "workflowRunId": runID}
+		payload := rt.replayPayload(ctx, tx, runID, map[string]any{"topicId": topicID, "workflowRunId": runID})
 		if _, err := queue.Send(ctx, tx, queue.TopicEvaluate, payload, queue.WithCorrelation(runID), queue.WithTrigger("worker")); err != nil {
 			return err
 		}
@@ -810,7 +969,7 @@ func (rt *Runtime) ensureArticleWriteJobs(ctx context.Context, tx pgx.Tx, runID 
 			if queued {
 				continue
 			}
-			payload := map[string]any{"topicId": topicID, "platform": platform, "workflowRunId": runID}
+			payload := rt.replayPayload(ctx, tx, runID, map[string]any{"topicId": topicID, "platform": platform, "workflowRunId": runID})
 			if _, err := queue.Send(ctx, tx, queue.ArticleWrite, payload, queue.WithCorrelation(runID), queue.WithTrigger("worker")); err != nil {
 				return err
 			}
@@ -832,7 +991,7 @@ func (rt *Runtime) ensureArticleEvaluateJobs(ctx context.Context, tx pgx.Tx, run
 		if evaluated {
 			continue
 		}
-		payload := map[string]any{"articleId": articleID, "workflowRunId": runID}
+		payload := rt.replayPayload(ctx, tx, runID, map[string]any{"articleId": articleID, "workflowRunId": runID})
 		if _, err := queue.Send(ctx, tx, queue.ArticleEvaluate, payload, queue.WithCorrelation(runID), queue.WithTrigger("worker")); err != nil {
 			return err
 		}
@@ -906,6 +1065,27 @@ func (rt *Runtime) failRun(ctx context.Context, tx pgx.Tx, runID uuid.UUID, reas
             summary = $3::jsonb
         where id = $1 and status not in ('completed', 'completed_empty', 'failed', 'cancelled')`,
 		runID, reason, jsonString(map[string]any{"reason": reason}))
+	return err
+}
+
+func (rt *Runtime) replayStopsAfter(ctx context.Context, tx pgx.Tx, runID uuid.UUID, node string) bool {
+	var raw []byte
+	if err := tx.QueryRow(ctx, `select replay_scope from workflow_runs where id = $1`, runID).Scan(&raw); err != nil {
+		return false
+	}
+	var scope map[string]any
+	if json.Unmarshal(raw, &scope) != nil {
+		return false
+	}
+	return replayMode(scope) == "evaluate_only" && nodeIndex(node) == nodeIndex(scopeString(scope, "replayFromNode"))
+}
+
+func scopeString(scope map[string]any, key string) string {
+	return strings.TrimSpace(fmt.Sprint(scope[key]))
+}
+
+func (rt *Runtime) completeReplayOnly(ctx context.Context, tx pgx.Tx, runID uuid.UUID, reason string) error {
+	_, err := tx.Exec(ctx, `update workflow_runs set status = 'completed', completed_at = now(), updated_at = now(), summary = $2::jsonb where id = $1 and status in ('queued', 'running')`, runID, jsonString(map[string]any{"reason": reason, "evaluateOnly": true}))
 	return err
 }
 
@@ -1226,8 +1406,21 @@ func cloneMap(value map[string]any) map[string]any {
 }
 
 func parseUUIDs(value any) []uuid.UUID {
-	items, ok := value.([]any)
-	if !ok {
+	var items []any
+	switch typed := value.(type) {
+	case []any:
+		items = typed
+	case []string:
+		items = make([]any, len(typed))
+		for index, item := range typed {
+			items[index] = item
+		}
+	case []uuid.UUID:
+		items = make([]any, len(typed))
+		for index, item := range typed {
+			items[index] = item
+		}
+	default:
 		return nil
 	}
 	ids := make([]uuid.UUID, 0, len(items))

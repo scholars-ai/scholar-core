@@ -177,42 +177,23 @@ func (s *Scheduler) tickContentWorkflow(ctx context.Context, settings Settings) 
 	}
 	now := s.now().UTC()
 	planned := now.Truncate(time.Duration(hours) * time.Hour)
-	var scheduleID uuid.UUID
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		qtx := s.q.WithTx(tx)
-		id, err := qtx.RecordScheduleRun(ctx, dbgen.RecordScheduleRunParams{
-			ScheduleKey: "content_production_workflow",
-			PlannedAt:   pgtype.Timestamptz{Time: planned, Valid: true},
-			Queue:       string(queue.SourceFetch),
-			Note:        pgtype.Text{String: "SPEC-010 content workflow", Valid: true},
-		})
-		if isNoRows(err) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		scheduleID = id
-		return nil
-	})
-	if err != nil {
-		s.log.Error("enqueue content workflow failed", "error", err)
-		return
-	}
 	sources, err := s.q.ListEnabledSourceIDs(ctx)
 	if err != nil {
 		s.log.Error("list workflow sources failed", "error", err)
 		return
 	}
-	created, err := workflow.New(s.pool, s.log).CreateContentRun(ctx, workflow.CreateOptions{
-		TriggerType: "scheduled", SourceIDs: sources,
-		Metadata: map[string]any{"scheduleRunId": scheduleID, "intervalHours": hours},
-	})
+	created, claimed, err := workflow.New(s.pool, s.log).CreateScheduledContentRun(ctx, workflow.CreateOptions{
+		SourceIDs: sources,
+		Metadata:  map[string]any{"intervalHours": hours},
+	}, "content_production_workflow", planned, "SPEC-010 content workflow")
 	if err != nil {
 		s.log.Error("create content workflow failed", "error", err)
 		return
 	}
-	s.log.Info("content workflow created", "run_id", created.ID, "schedule_run_id", scheduleID)
+	if !claimed {
+		return
+	}
+	s.log.Info("content workflow created", "run_id", created.ID)
 }
 
 func buildWorkflowSourcePayload(sourceID, runID uuid.UUID) map[string]any {

@@ -22,12 +22,43 @@ func TestNodeOrderAndValidation(t *testing.T) {
 	}
 }
 
+func TestNormalizeCreateOptionsAppliesDefaultsAndValidatesNode(t *testing.T) {
+	got, err := normalizeCreateOptions(CreateOptions{}, "scheduled")
+	if err != nil {
+		t.Fatalf("defaults rejected: %v", err)
+	}
+	if got.TriggerType != "scheduled" || got.StartNode != "source_fetch" {
+		t.Fatalf("unexpected defaults: trigger=%q start=%q", got.TriggerType, got.StartNode)
+	}
+	if _, err := normalizeCreateOptions(CreateOptions{StartNode: "unknown"}, "manual"); err == nil {
+		t.Fatal("unknown start node accepted")
+	}
+}
+
 func TestParseUUIDsDeduplicatesAndIgnoresInvalidValues(t *testing.T) {
 	one := uuid.New()
 	two := uuid.New()
 	got := parseUUIDs([]any{one.String(), "bad", two, one.String(), uuid.Nil.String()})
 	if len(got) != 2 || got[0] != one || got[1] != two {
 		t.Fatalf("unexpected UUIDs: %#v", got)
+	}
+	if got = parseUUIDs([]string{one.String(), two.String()}); len(got) != 2 {
+		t.Fatalf("string slice was not parsed: %#v", got)
+	}
+}
+
+func TestReplayScopeValidation(t *testing.T) {
+	if err := validateReplayScope(map[string]any{"mode": "full"}); err != nil {
+		t.Fatalf("full replay rejected: %v", err)
+	}
+	if err := validateReplayScope(map[string]any{"mode": "selected_items", "itemIds": []string{uuid.NewString()}}); err != nil {
+		t.Fatalf("selected replay rejected: %v", err)
+	}
+	if err := validateReplayScope(map[string]any{"mode": "selected_items"}); err == nil {
+		t.Fatal("selected replay without item IDs accepted")
+	}
+	if err := validateReplayScope(map[string]any{"mode": "unknown"}); err == nil {
+		t.Fatal("unknown replay mode accepted")
 	}
 }
 
