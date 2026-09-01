@@ -20,14 +20,19 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 type Shutdown func(context.Context) error
 
 const (
-	StatusDisabled    = "disabled"
-	StatusConfigured  = "configured"
-	StatusUnavailable = "unavailable"
+	StatusDisabled     = "disabled"
+	StatusConfigured   = "configured"
+	StatusUnavailable  = "unavailable"
+	healthProbeEvery   = 5 * time.Second
+	healthProbeTimeout = 2 * time.Second
+	healthFailureLimit = 2
 )
 
 var runtimeStatus atomic.Value
@@ -103,10 +108,51 @@ func Init(ctx context.Context, serviceName string) (Shutdown, error) {
 	otel.SetMeterProvider(mp)
 	runtimeStatus.Store(StatusConfigured)
 	initMetrics()
+	monitorCtx, stopMonitor := context.WithCancel(ctx)
+	go monitorEndpoint(monitorCtx, endpoint)
 
 	return func(ctx context.Context) error {
+		stopMonitor()
 		return errors.Join(mp.Shutdown(ctx), tp.Shutdown(ctx))
 	}, nil
+}
+
+// monitorEndpoint detects an exporter endpoint that becomes unreachable after
+// startup. The probe is deliberately independent from SDK export queues: it
+// only updates the diagnostic status used when a workflow run is created and
+// never blocks business work.
+func monitorEndpoint(ctx context.Context, endpoint string) {
+	ticker := time.NewTicker(healthProbeEvery)
+	defer ticker.Stop()
+	failures := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			probeCtx, cancel := context.WithTimeout(ctx, healthProbeTimeout)
+			err := probeEndpoint(probeCtx, endpoint)
+			cancel()
+			if err != nil {
+				failures++
+				if failures >= healthFailureLimit {
+					runtimeStatus.Store(StatusUnavailable)
+				}
+				continue
+			}
+			failures = 0
+			runtimeStatus.Store(StatusConfigured)
+		}
+	}
+}
+
+func probeEndpoint(ctx context.Context, endpoint string) error {
+	conn, err := grpc.DialContext(ctx, endpoint,
+		grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	if err != nil {
+		return err
+	}
+	return conn.Close()
 }
 
 func env(name, fallback string) string {
