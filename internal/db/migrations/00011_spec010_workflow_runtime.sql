@@ -1,12 +1,12 @@
 -- +goose Up
 -- SPEC-010: immutable run snapshots, node runs, item decisions and replay metadata.
 alter table workflow_runs drop constraint if exists workflow_runs_status_check;
+alter table workflow_runs drop constraint if exists workflow_runs_mode_check;
 update workflow_runs set status = 'completed' where status = 'succeeded';
 update workflow_runs set mode = 'content_production' where mode = 'cascade';
 alter table workflow_runs add constraint workflow_runs_status_check check (
     status in ('queued', 'running', 'waiting_human_review', 'completed', 'completed_empty', 'partial_failed', 'failed', 'cancelled')
 );
-alter table workflow_runs drop constraint if exists workflow_runs_mode_check;
 alter table workflow_runs add constraint workflow_runs_mode_check check (mode in ('cascade', 'content_production'));
 alter table workflow_runs add column if not exists trigger_type text not null default 'manual';
 alter table workflow_runs add constraint workflow_runs_trigger_type_check check (trigger_type in ('scheduled', 'manual', 'replay'));
