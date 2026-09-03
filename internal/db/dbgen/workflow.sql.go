@@ -366,6 +366,43 @@ func (q *Queries) CreateWorkflowSnapshot(ctx context.Context, arg CreateWorkflow
 	return i, err
 }
 
+const createWorkflowVersion = `-- name: CreateWorkflowVersion :one
+insert into workflow_versions (kind, name, version, metadata, sha256)
+values ($1, $2, $3, $4, $5)
+returning id, kind, name, version, status, metadata, sha256, created_at, retired_at
+`
+
+type CreateWorkflowVersionParams struct {
+	Kind     string `json:"kind"`
+	Name     string `json:"name"`
+	Version  string `json:"version"`
+	Metadata []byte `json:"metadata"`
+	Sha256   string `json:"sha256"`
+}
+
+func (q *Queries) CreateWorkflowVersion(ctx context.Context, arg CreateWorkflowVersionParams) (WorkflowVersion, error) {
+	row := q.db.QueryRow(ctx, createWorkflowVersion,
+		arg.Kind,
+		arg.Name,
+		arg.Version,
+		arg.Metadata,
+		arg.Sha256,
+	)
+	var i WorkflowVersion
+	err := row.Scan(
+		&i.ID,
+		&i.Kind,
+		&i.Name,
+		&i.Version,
+		&i.Status,
+		&i.Metadata,
+		&i.Sha256,
+		&i.CreatedAt,
+		&i.RetiredAt,
+	)
+	return i, err
+}
+
 const finishWorkflowRun = `-- name: FinishWorkflowRun :one
 update workflow_runs
 set status = $2, error_message = $3, completed_at = now(), updated_at = now()
@@ -803,6 +840,50 @@ func (q *Queries) ListWorkflowTopics(ctx context.Context, correlationID uuid.Nul
 	for rows.Next() {
 		var i ListWorkflowTopicsRow
 		if err := rows.Scan(&i.ID, &i.Title); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkflowVersions = `-- name: ListWorkflowVersions :many
+select id, kind, name, version, status, metadata, sha256, created_at, retired_at from workflow_versions
+where ($1 = '' or kind = $1)
+  and ($2 = '' or name = $2)
+  and ($3 = '' or status = $3)
+order by kind asc, name asc, version asc
+`
+
+type ListWorkflowVersionsParams struct {
+	Column1 interface{} `json:"column_1"`
+	Column2 interface{} `json:"column_2"`
+	Column3 interface{} `json:"column_3"`
+}
+
+func (q *Queries) ListWorkflowVersions(ctx context.Context, arg ListWorkflowVersionsParams) ([]WorkflowVersion, error) {
+	rows, err := q.db.Query(ctx, listWorkflowVersions, arg.Column1, arg.Column2, arg.Column3)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WorkflowVersion
+	for rows.Next() {
+		var i WorkflowVersion
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.Name,
+			&i.Version,
+			&i.Status,
+			&i.Metadata,
+			&i.Sha256,
+			&i.CreatedAt,
+			&i.RetiredAt,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

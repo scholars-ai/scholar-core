@@ -33,6 +33,27 @@ func TestValidTopicStatuses(t *testing.T) {
 	}
 }
 
+func TestWorkflowVersionValidationAndHash(t *testing.T) {
+	for _, kind := range []WorkflowVersionKind{Agent, Model, Prompt, Rubric, Weight, Workflow} {
+		if !validWorkflowVersionKinds[kind] {
+			t.Errorf("workflow version kind %q should be accepted", kind)
+		}
+	}
+	for _, status := range []WorkflowVersionStatus{Active, Retired} {
+		if !validWorkflowVersionStatuses[status] {
+			t.Errorf("workflow version status %q should be accepted", status)
+		}
+	}
+	if validWorkflowVersionKinds[WorkflowVersionKind("unknown")] {
+		t.Fatal("unknown workflow version kind accepted")
+	}
+	got := workflowVersionHash("workflow", "content-production", "v1", map[string]interface{}{})
+	const want = "370512c7726c6e927bdb108dc836afed42d68e7eb5406c14c5b199bd5e754786"
+	if got != want {
+		t.Fatalf("hash = %s, want %s", got, want)
+	}
+}
+
 func TestToAPIEvaluationIncludesReplayMetadata(t *testing.T) {
 	topicID := uuid.New()
 	evaluationID := uuid.New()

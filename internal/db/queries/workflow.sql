@@ -159,3 +159,15 @@ select a.id, a.title from articles a
 join topics t on t.id = a.topic_id
 where t.correlation_id = $1
 order by a.created_at asc;
+
+-- name: ListWorkflowVersions :many
+select * from workflow_versions
+where ($1 = '' or kind = $1)
+  and ($2 = '' or name = $2)
+  and ($3 = '' or status = $3)
+order by kind asc, name asc, version asc;
+
+-- name: CreateWorkflowVersion :one
+insert into workflow_versions (kind, name, version, metadata, sha256)
+values ($1, $2, $3, $4, $5)
+returning *;

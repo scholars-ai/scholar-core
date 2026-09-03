@@ -53,6 +53,30 @@ func TestConfigOverrideValidationRejectsUnknownAndOutOfRangeValues(t *testing.T)
 	}
 }
 
+func TestSplitNamedVersionRequiresNameAndVPrefix(t *testing.T) {
+	name, version, ok := splitNamedVersion("topic@v2")
+	if !ok || name != "topic" || version != "v2" {
+		t.Fatalf("unexpected parsed version: %q %q %v", name, version, ok)
+	}
+	for _, value := range []string{"v2", "topic@2", "topic@", "@v2", "   ", "topic@v2@v3"} {
+		if _, _, ok := splitNamedVersion(value); ok {
+			t.Fatalf("invalid named version accepted: %q", value)
+		}
+	}
+}
+
+func TestWorkflowConfigOverrideValidationKeepsVersionFieldsDistinct(t *testing.T) {
+	if err := validateConfigOverrides(map[string]any{
+		"agentVersion":  "topic-judge@v1",
+		"promptVersion": "topic-judge@v2",
+		"rubricVersion": "topic@v2",
+		"model":         "vtrix/gpt-5.6-sol",
+		"weightVersion": 1.0,
+	}); err != nil {
+		t.Fatalf("valid version overrides rejected structurally: %v", err)
+	}
+}
+
 func TestConfigSnapshotPayloadIsVersionedAndDeterministic(t *testing.T) {
 	payload := configSnapshotPayload("replay", map[string]any{"model": "judge", "topicPassThreshold": 72.0})
 	var decoded map[string]any

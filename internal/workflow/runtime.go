@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -136,6 +137,9 @@ func normalizeCreateOptions(opts CreateOptions, defaultTrigger string) (CreateOp
 
 func (rt *Runtime) createContentRunTx(ctx context.Context, tx pgx.Tx, runID uuid.UUID, opts CreateOptions) error {
 	qtx := dbgen.New(tx)
+	if err := validateRegisteredWorkflowConfig(ctx, tx, opts.ConfigOverrides); err != nil {
+		return err
+	}
 	metadata := cloneMap(opts.Metadata)
 	metadata["sourceCount"] = len(opts.SourceIDs)
 	metadata["sourceIds"] = opts.SourceIDs
@@ -251,6 +255,9 @@ func (rt *Runtime) CreateReplay(ctx context.Context, parentID uuid.UUID, scope m
 	replayScope["replayFromNode"] = fromNode
 	err = pgx.BeginFunc(ctx, rt.pool, func(tx pgx.Tx) error {
 		qtx := dbgen.New(tx)
+		if err := validateRegisteredWorkflowConfig(ctx, tx, mergedOverrides); err != nil {
+			return err
+		}
 		var inserted uuid.UUID
 		row := tx.QueryRow(ctx, `insert into workflow_runs
             (id, correlation_id, mode, start_node, status, metadata, trigger_type,
@@ -638,6 +645,107 @@ func validateConfigOverrides(overrides map[string]any) error {
 		}
 	}
 	return nil
+}
+
+// validateRegisteredWorkflowConfig keeps free-form replay overrides from
+// silently referring to a version that the runtime cannot identify. The
+// structural checks above remain independent so malformed values are still
+// rejected before a database transaction is opened.
+func validateRegisteredWorkflowConfig(ctx context.Context, tx pgx.Tx, overrides map[string]any) error {
+	if err := registeredVersionExists(ctx, tx, "workflow", "content-production", "v1"); err != nil {
+		return err
+	}
+	for key, value := range overrides {
+		switch key {
+		case "agentVersion":
+			if err := validateNamedVersionOverride(ctx, tx, "agent", key, value); err != nil {
+				return err
+			}
+		case "promptVersion":
+			if err := validateNamedVersionOverride(ctx, tx, "prompt", key, value); err != nil {
+				return err
+			}
+		case "rubricVersion", "topicRubricVersion", "articleRubricVersion":
+			if err := validateNamedVersionOverride(ctx, tx, "rubric", key, value); err != nil {
+				return err
+			}
+		case "weightVersion", "topicWeightVersion", "articleWeightVersion":
+			number, ok := numericOverride(value)
+			if !ok || number != float64(int(number)) {
+				return fmt.Errorf("workflow override %q must be a registered integer version", key)
+			}
+			if err := validateAnyNamedVersion(ctx, tx, "weight", key, strconv.Itoa(int(number))); err != nil {
+				return err
+			}
+		case "model", "topicScoutModel", "topicJudgeModel", "outlineModel", "draftModel", "criticModel", "articleJudgeModel":
+			if err := validateModelOverride(ctx, tx, key, value); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateNamedVersionOverride(ctx context.Context, tx pgx.Tx, kind, key string, value any) error {
+	raw, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("workflow override %q must be a registered name@version", key)
+	}
+	name, version, ok := splitNamedVersion(strings.TrimSpace(raw))
+	if !ok {
+		return fmt.Errorf("workflow override %q must use name@vN format", key)
+	}
+	return registeredVersionExists(ctx, tx, kind, name, version)
+}
+
+func validateModelOverride(ctx context.Context, tx pgx.Tx, key string, value any) error {
+	raw, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("workflow override %q must be a registered model", key)
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fmt.Errorf("workflow override %q must be a registered model", key)
+	}
+	name, version := raw, "v1"
+	if parsedName, parsedVersion, ok := splitNamedVersion(raw); ok {
+		name, version = parsedName, parsedVersion
+	}
+	return registeredVersionExists(ctx, tx, "model", name, version)
+}
+
+func validateAnyNamedVersion(ctx context.Context, tx pgx.Tx, kind, key, version string) error {
+	var exists bool
+	if err := tx.QueryRow(ctx, `select exists(select 1 from workflow_versions where kind = $1 and version = $2)`, kind, version).Scan(&exists); err != nil {
+		return fmt.Errorf("validate workflow override %q: %w", key, err)
+	}
+	if !exists {
+		return fmt.Errorf("workflow override %q references unregistered %s version %s", key, kind, version)
+	}
+	return nil
+}
+
+func registeredVersionExists(ctx context.Context, tx pgx.Tx, kind, name, version string) error {
+	var exists bool
+	if err := tx.QueryRow(ctx, `select exists(select 1 from workflow_versions where kind = $1 and name = $2 and version = $3)`, kind, name, version).Scan(&exists); err != nil {
+		return fmt.Errorf("validate registered workflow version: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("unregistered %s version %s@%s", kind, name, version)
+	}
+	return nil
+}
+
+func splitNamedVersion(raw string) (string, string, bool) {
+	separator := strings.LastIndex(raw, "@")
+	if separator <= 0 || separator == len(raw)-1 {
+		return "", "", false
+	}
+	name, version := strings.TrimSpace(raw[:separator]), strings.TrimSpace(raw[separator+1:])
+	if name == "" || version == "" || strings.Contains(name, "@") || !strings.HasPrefix(version, "v") {
+		return "", "", false
+	}
+	return name, version, true
 }
 
 func numericOverride(value any) (float64, bool) {

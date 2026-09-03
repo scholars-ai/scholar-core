@@ -553,6 +553,7 @@ type AgentRun struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	CorrelationID   uuid.NullUUID      `json:"correlation_id"`
+	AgentVersion    pgtype.Text        `json:"agent_version"`
 }
 
 type Article struct {
@@ -891,4 +892,16 @@ type WorkflowSnapshot struct {
 	ArchivedAt     pgtype.Timestamptz `json:"archived_at"`
 	StorageRef     pgtype.Text        `json:"storage_ref"`
 	RetentionUntil pgtype.Timestamptz `json:"retention_until"`
+}
+
+type WorkflowVersion struct {
+	ID        uuid.UUID          `json:"id"`
+	Kind      string             `json:"kind"`
+	Name      string             `json:"name"`
+	Version   string             `json:"version"`
+	Status    string             `json:"status"`
+	Metadata  []byte             `json:"metadata"`
+	Sha256    string             `json:"sha256"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	RetiredAt pgtype.Timestamptz `json:"retired_at"`
 }
