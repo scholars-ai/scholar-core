@@ -33,7 +33,7 @@ values
     ('prompt', 'writer-self-critic', 'v1', '{}', '45e47d03ea65d5434ab797224e6a0119accd8612a627a45bc819d3d857c2c295'),
     ('prompt', 'article-judge', 'v1', '{}', '1d45586bf705adde8e3e4770af9112e5e23f796bb10c3bb58ab3851c87f94c20'),
     ('prompt', 'memory-reflector', 'v1', '{}', '316b58c8a7fc9f7b24439c97a691cd1726d217a573470bed316bca7ed85bd27a'),
-    ('rubric', 'topic', 'v1', '{}', '5ea5eabcbbb7c1955012176682fe0e494385530c5ffd1d51343cc13ab7908'),
+    ('rubric', 'topic', 'v1', '{}', '5ea5eabcbbb7c1955012176682fe0e494385530890c5ffd1d51343cc13ab7908'),
     ('rubric', 'topic', 'v2', '{}', '80316b1876cf8161ef253ac93356a74dbe709ae5698785ada8a5e7992f93dce5'),
     ('rubric', 'article/xiaohongshu', 'v1', '{}', '1db948e5c0f16173fd8b2f0d3fab3302a66d769b217c5824f6346036ead37f5e'),
     ('rubric', 'article/zhihu', 'v1', '{}', 'efd6f73b936e9e6885ad3a72acacec1ae8a34e002e71cafe6e1db94638b1a07d'),
