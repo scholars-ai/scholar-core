@@ -525,7 +525,12 @@ func (q *Queries) GetWorkflowSnapshotForRun(ctx context.Context, arg GetWorkflow
 }
 
 const listEnabledSourceIDs = `-- name: ListEnabledSourceIDs :many
-select id from sources where enabled = true and archived_at is null order by created_at asc
+select id from sources
+where enabled = true
+  and archived_at is null
+  and type <> 'manual'
+  and url is not null
+order by created_at asc
 `
 
 func (q *Queries) ListEnabledSourceIDs(ctx context.Context) ([]uuid.UUID, error) {

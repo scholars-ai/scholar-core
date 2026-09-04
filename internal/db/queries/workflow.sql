@@ -120,7 +120,12 @@ where run_id = $1
 order by created_at asc;
 
 -- name: ListEnabledSourceIDs :many
-select id from sources where enabled = true and archived_at is null order by created_at asc;
+select id from sources
+where enabled = true
+  and archived_at is null
+  and type <> 'manual'
+  and url is not null
+order by created_at asc;
 
 -- name: WorkflowRunReadyToFinish :one
 with latest_articles as (
